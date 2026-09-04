@@ -6,6 +6,7 @@ Implements BaseMemoryStore with user_id scoping, atomic upsert-by-similarity,
 subgraph retrieval, and relational contradiction resolution.
 """
 
+import re
 import sqlite3
 import json
 import time
@@ -126,8 +127,19 @@ class NativeHybridStore(BaseMemoryStore):
                 )
             """)
 
+            # 4. conversation_turns (multi-turn sliding window buffer)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL DEFAULT 'default_user',
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL
+                )
+            """)
+
             # Ensure user_id column exists if tables were created with earlier schema
-            for table in ["kg_entities", "kg_triples", "semantic_memories"]:
+            for table in ["kg_entities", "kg_triples", "semantic_memories", "conversation_turns"]:
                 cursor.execute(f"PRAGMA table_info({table})")
                 cols = [row["name"] for row in cursor.fetchall()]
                 if "user_id" not in cols:
@@ -141,6 +153,7 @@ class NativeHybridStore(BaseMemoryStore):
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_triples_user_obj ON kg_triples(user_id, object)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_triples_user_pred ON kg_triples(user_id, predicate)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_semantic_user ON semantic_memories(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_turns_user ON conversation_turns(user_id, id)")
             conn.commit()
 
     def upsert_triple(
@@ -399,16 +412,22 @@ class NativeHybridStore(BaseMemoryStore):
             """, (user_clean,))
             rows = cursor.fetchall()
 
+        q_words = set(w.lower() for w in re.findall(r"\w+", query_clean) if len(w) > 2)
+
         scored = []
         for r in rows:
             emb = json.loads(r["embedding_json"])
-            sim = cosine_similarity(q_vec, emb)
-            if sim >= min_similarity:
+            cos_sim = cosine_similarity(q_vec, emb)
+            c_words = set(w.lower() for w in re.findall(r"\w+", r["content"]))
+            overlap = len(q_words & c_words) / max(len(q_words), 1) if q_words else 0.0
+            # Blended score: cosine similarity + keyword match
+            blended = 0.65 * cos_sim + 0.35 * overlap
+            if blended >= min_similarity or overlap >= 0.25:
                 scored.append({
                     "id": r["id"],
                     "content": r["content"],
                     "category": r["category"],
-                    "similarity": round(sim, 4),
+                    "similarity": round(blended, 4),
                     "access_count": r["access_count"],
                     "updated_at": r["updated_at"]
                 })
@@ -492,3 +511,33 @@ class NativeHybridStore(BaseMemoryStore):
                         profile["preferences"].append(pref_str)
 
         return profile
+
+    def save_turn(self, user_id: str, role: str, content: str) -> None:
+        """Stores a conversation turn in the user's conversation buffer."""
+        user_clean = user_id.strip() or "default_user"
+        content_clean = content.strip()
+        if not content_clean:
+            return
+        now = time.time()
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO conversation_turns (user_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_clean, role, content_clean, now))
+            conn.commit()
+
+    def get_recent_turns(self, user_id: str, limit: int = 6) -> List[Dict[str, str]]:
+        """Returns the most recent conversation turns in chronological order."""
+        user_clean = user_id.strip() or "default_user"
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT role, content FROM conversation_turns
+                WHERE user_id = ?
+                ORDER BY id DESC LIMIT ?
+            """, (user_clean, limit))
+            rows = cursor.fetchall()
+            ordered = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+            return ordered
+

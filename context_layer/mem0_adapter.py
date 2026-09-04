@@ -147,3 +147,10 @@ class Mem0StoreAdapter(BaseMemoryStore):
 
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         return self.fallback.get_user_profile(user_id)
+
+    def save_turn(self, user_id: str, role: str, content: str) -> None:
+        self.fallback.save_turn(user_id, role, content)
+
+    def get_recent_turns(self, user_id: str, limit: int = 6) -> List[Dict[str, str]]:
+        return self.fallback.get_recent_turns(user_id, limit)
+

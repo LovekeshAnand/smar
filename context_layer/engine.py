@@ -80,13 +80,16 @@ class ContextLayerEngine:
                 category="conversation"
             )
 
-        # 3. Hybrid Retrieval
+        # 3. Hybrid Retrieval (Facts + Semantic Memories)
         retrieval_result = self.retriever.retrieve_context(
             user_id=user_clean,
             query=user_text
         )
 
-        # 4. Dynamic Prompt Composition
+        # 4. Fetch Recent Dialogue Turns (Short-term conversational memory buffer)
+        recent_turns = self.store.get_recent_turns(user_clean, limit=6)
+
+        # 5. Dynamic Prompt Composition
         system_prompt = self.composer.compose_system_prompt(
             retrieval_result=retrieval_result,
             language_hint=language_hint,
@@ -97,7 +100,8 @@ class ContextLayerEngine:
             "user_id": user_clean,
             "system_prompt": system_prompt,
             "retrieval": retrieval_result,
-            "extracted_facts": extracted_facts
+            "extracted_facts": extracted_facts,
+            "recent_turns": recent_turns
         }
 
     def add_explicit_memory(

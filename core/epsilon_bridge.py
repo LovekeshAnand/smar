@@ -67,18 +67,36 @@ class EpsilonBridge:
                 logger.warning(f"Could not load Epsilon config from {self.config_path}: {e}")
         return {}
 
-    def format_prompt(self, user_prompt: str, context: Optional[str] = None, system_prompt: Optional[str] = None) -> str:
-        """Wraps conversation and memory context in ChatML template."""
+    def format_prompt(
+        self,
+        user_prompt: str,
+        context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        """Wraps conversation history and memory context in ChatML template."""
         sys_text = system_prompt or DEFAULT_SYSTEM_PROMPT
         if context:
             sys_text += f"\n\n[Persistent Memory Context]:\n{context}\n[End Context]"
         
-        formatted = (
-            CHATML_SYSTEM.format(system_content=sys_text.strip()) +
-            CHATML_USER.format(user_content=user_prompt.strip()) +
-            CHATML_ASST
-        )
-        return formatted
+        parts = [CHATML_SYSTEM.format(system_content=sys_text.strip())]
+
+        # Ingest multi-turn history if present
+        if conversation_history:
+            for turn in conversation_history:
+                role = turn.get("role", "user").lower()
+                content = turn.get("content", "").strip()
+                if not content:
+                    continue
+                if role == "user":
+                    parts.append(CHATML_USER.format(user_content=content))
+                elif role in ("assistant", "system", "smar"):
+                    parts.append(f"<|im_start|>assistant\n{content}<|im_end|>\n")
+
+        # Current turn
+        parts.append(CHATML_USER.format(user_content=user_prompt.strip()))
+        parts.append(CHATML_ASST)
+        return "".join(parts)
 
     @property
     def api_base(self) -> str:
@@ -105,6 +123,7 @@ class EpsilonBridge:
         user_prompt: str,
         context: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
         max_tokens: int = 256,
         temperature: float = 0.2
     ) -> str:
@@ -113,26 +132,32 @@ class EpsilonBridge:
             prompt=user_prompt,
             context=context,
             system_prompt=system_prompt,
+            conversation_history=conversation_history,
             max_tokens=max_tokens,
             temperature=temperature
         )
 
     async def generate(
-
         self,
         prompt: str,
         context: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
         tier: Optional[str] = None,
         max_tokens: int = 256,
         temperature: float = 0.2,
     ) -> str:
         """
-        Sends the prompt with memory context to Epsilon LLM and returns the generated text.
+        Sends the prompt with memory context and recent conversation history to Epsilon LLM.
         """
         chosen_tier = tier or self.active_tier
         port = self.tier_ports.get(chosen_tier, self.server_port)
-        formatted_prompt = self.format_prompt(prompt, context=context, system_prompt=system_prompt)
+        formatted_prompt = self.format_prompt(
+            prompt,
+            context=context,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history
+        )
         
         url = f"http://{self.server_host}:{port}/completion"
         payload = {

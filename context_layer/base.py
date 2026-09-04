@@ -80,3 +80,14 @@ class BaseMemoryStore(ABC):
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """Synthesizes known key attributes for the specified user (name, email, preferences)."""
         pass
+
+    @abstractmethod
+    def save_turn(self, user_id: str, role: str, content: str) -> None:
+        """Stores a conversation turn in the user's conversation buffer."""
+        pass
+
+    @abstractmethod
+    def get_recent_turns(self, user_id: str, limit: int = 6) -> List[Dict[str, str]]:
+        """Returns the most recent conversation turns in chronological order."""
+        pass
+

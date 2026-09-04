@@ -218,7 +218,16 @@ async def process_chat(req: ChatRequest):
     system_prompt = turn_result["system_prompt"]
     retrieval = turn_result["retrieval"]
     structured_facts = retrieval.get("structured_facts", [])
-    context_summary = " | ".join(structured_facts) if structured_facts else None
+    semantic_memories = retrieval.get("semantic_memories", [])
+    recent_turns = turn_result.get("recent_turns", [])
+
+    # Assemble rich context from structured graph facts and semantic memory recall
+    context_blocks = []
+    if structured_facts:
+        context_blocks.append("[Verified Facts]:\n" + "\n".join(f"- {f}" for f in structured_facts))
+    if semantic_memories:
+        context_blocks.append("[Recalled Past Notes & Context]:\n" + "\n".join(f"- {m}" for m in semantic_memories))
+    context_summary = "\n\n".join(context_blocks) if context_blocks else None
 
     # Sync to legacy context manager for connector normalizer compatibility
     try:
@@ -226,20 +235,23 @@ async def process_chat(req: ChatRequest):
     except Exception:
         pass
 
-    # 2. Query Epsilon LLM with dynamic identity and recalled context
+    # 2. Query Epsilon LLM with dynamic identity, recalled context, and multi-turn history
     try:
         reply_text = await epsilon_bridge.generate_reply(
             user_prompt=user_text,
             context=context_summary,
             system_prompt=system_prompt,
+            conversation_history=recent_turns,
             max_tokens=256
         )
     except Exception as e:
         logger.error(f"Epsilon generation error: {e}")
         reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
 
-    # 3. Ingest complete dialogue turn into semantic memory
+    # 3. Commit turns to multi-turn conversation buffer and semantic memory
     try:
+        context_engine.store.save_turn(user_id=user_id, role="user", content=user_text)
+        context_engine.store.save_turn(user_id=user_id, role="assistant", content=reply_text)
         context_engine.store.upsert_semantic(
             user_id=user_id,
             text=f"User: {user_text}\nAssistant: {reply_text}",
