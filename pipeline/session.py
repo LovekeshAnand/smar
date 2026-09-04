@@ -85,6 +85,7 @@ class VoiceAgentSession:
         tts_audio = None
         if speak_output and reply:
             try:
+                print("[SMAR] Speaking (Gnani TTS)...")
                 tts_audio = await self.tts.synthesize(reply)
                 if tts_audio:
                     self.audio.play_wav_bytes(tts_audio)

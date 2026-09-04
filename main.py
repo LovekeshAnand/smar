@@ -22,10 +22,14 @@ load_dotenv()
 from pipeline.session import VoiceAgentSession
 
 
-async def run_cli_mode(session: VoiceAgentSession):
+async def run_cli_mode(session: VoiceAgentSession, mute: bool = False):
     print("=" * 60)
     print("  SMAR: Memory-Driven Autonomous Voice Assistant")
     print("  [Mode: Interactive CLI with Epsilon LLM & Context Memory]")
+    if not mute:
+        print("  [Voice Output: ON - Spoken via Gnani TTS (Deepak)]")
+    else:
+        print("  [Voice Output: MUTED]")
     print("  Type your prompt, or type 'exit' / 'quit' to stop.")
     print("=" * 60 + "\n")
 
@@ -38,7 +42,7 @@ async def run_cli_mode(session: VoiceAgentSession):
                 print("\n[SMAR] Exiting session. Memory state preserved.")
                 break
 
-            await session.process_text_turn(prompt, speak_output=False)
+            await session.process_text_turn(prompt, speak_output=not mute)
         except (KeyboardInterrupt, EOFError):
             print("\n[SMAR] Terminating session.")
             break
@@ -89,6 +93,7 @@ def main():
     parser = argparse.ArgumentParser(description="SMAR Voice Automation System")
     parser.add_argument("--voice", action="store_true", help="Launch in continuous voice interaction mode")
     parser.add_argument("--cli", action="store_true", help="Launch in text/interactive terminal mode")
+    parser.add_argument("--mute", action="store_true", help="Silence voice TTS playback in CLI mode")
     parser.add_argument("--test", action="store_true", help="Run self-test diagnostics on memory and components")
     parser.add_argument("--duration", type=float, default=5.0, help="Voice recording duration per turn in seconds")
 
@@ -101,7 +106,7 @@ def main():
         asyncio.run(run_diagnostic_test(session))
     else:
         # Default to CLI interactive mode
-        asyncio.run(run_cli_mode(session))
+        asyncio.run(run_cli_mode(session, mute=args.mute))
 
 
 if __name__ == "__main__":

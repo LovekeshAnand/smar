@@ -2,24 +2,37 @@
 voice/audio_io.py
 =================
 Cross-platform microphone capture and audio playback for SMAR.
+Uses native Windows multimedia (winsound) for instant playback when on Windows,
+with sounddevice / soundfile as cross-platform audio engine.
 """
 
 import os
 import io
 import wave
-import time
+import sys
 import logging
 from typing import Optional
 
 logger = logging.getLogger("smar.voice.audio_io")
 
+# Check native Windows audio
+HAVE_WINSOUND = False
+if sys.platform == "win32":
+    try:
+        import winsound
+        HAVE_WINSOUND = True
+    except ImportError:
+        pass
+
+# Check cross-platform sounddevice & soundfile
+HAVE_SOUNDDEVICE = False
 try:
     import sounddevice as sd
     import soundfile as sf
     import numpy as np
-    AUDIO_LIBS_AVAILABLE = True
+    HAVE_SOUNDDEVICE = True
 except ImportError:
-    AUDIO_LIBS_AVAILABLE = False
+    pass
 
 
 class AudioIO:
@@ -32,8 +45,8 @@ class AudioIO:
         Record audio from the default microphone for a fixed duration.
         Returns WAV-encoded audio bytes.
         """
-        if not AUDIO_LIBS_AVAILABLE:
-            raise RuntimeError("sounddevice and soundfile libraries are required for microphone capture.")
+        if not HAVE_SOUNDDEVICE:
+            raise RuntimeError("sounddevice is required for microphone recording.")
 
         logger.info(f"Recording microphone for {duration_seconds}s at {self.sample_rate}Hz...")
         recording = sd.rec(
@@ -45,7 +58,6 @@ class AudioIO:
         sd.wait()
         logger.info("Recording complete.")
 
-        # Pack into WAV bytes in-memory
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, 'wb') as wf:
             wf.setnchannels(self.channels)
@@ -55,28 +67,35 @@ class AudioIO:
 
         return wav_buffer.getvalue()
 
-    def record_until_silence(self, max_seconds: float = 10.0, silence_threshold: int = 500) -> bytes:
-        """
-        Record audio until a period of silence is detected or max_seconds is reached.
-        """
-        # Fallback to record_seconds if dynamic VAD is not required yet
-        return self.record_seconds(min(max_seconds, 5.0))
-
     def play_wav_bytes(self, wav_bytes: bytes) -> None:
         """
         Play WAV audio bytes through the default speaker output.
+        Uses native winsound on Windows for instantaneous playback.
         """
-        if not AUDIO_LIBS_AVAILABLE:
-            logger.warning("sounddevice not available; cannot play audio to speakers.")
+        if not wav_bytes:
             return
 
-        try:
-            wav_buffer = io.BytesIO(wav_bytes)
-            data, fs = sf.read(wav_buffer, dtype='float32')
-            sd.play(data, fs)
-            sd.wait()
-        except Exception as e:
-            logger.error(f"Error playing audio bytes: {e}")
+        # 1. Native Windows fast audio playback
+        if HAVE_WINSOUND:
+            try:
+                winsound.PlaySound(wav_bytes, winsound.SND_MEMORY)
+                return
+            except Exception as e:
+                logger.debug(f"winsound failed ({e}), falling back to sounddevice")
+
+        # 2. sounddevice / soundfile playback
+        if HAVE_SOUNDDEVICE:
+            try:
+                wav_buffer = io.BytesIO(wav_bytes)
+                data, fs = sf.read(wav_buffer, dtype='float32')
+                sd.play(data, fs)
+                sd.wait()
+                return
+            except Exception as e:
+                logger.error(f"sounddevice audio playback failed: {e}")
+                return
+
+        logger.warning("No audio playback driver available (winsound or sounddevice required).")
 
     def save_wav(self, wav_bytes: bytes, output_path: str) -> str:
         """Save WAV bytes to a file on disk."""
