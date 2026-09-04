@@ -9,11 +9,6 @@ export interface ChatMessage {
   timestamp: string;
   audioBase64?: string | null;
   contextUsed?: string | null;
-  workIntent?: {
-    action?: string;
-    target?: string;
-    success?: boolean;
-  } | null;
 }
 
 interface ConversationStreamProps {

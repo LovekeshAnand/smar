@@ -37,8 +37,6 @@ from core.epsilon_bridge import EpsilonBridge
 from voice.gnani_stt import GnaniSTT
 from voice.gnani_tts import GnaniTTS
 from memory.context_manager import ContextManager
-from memory.normalizer import DataNormalizer
-from connectors.universal import UniversalConnector
 from context_layer import ContextLayerEngine, ContextConfig
 
 app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
@@ -56,8 +54,6 @@ app.add_middleware(
 context_config = ContextConfig()
 context_engine = ContextLayerEngine(context_config)
 context_mgr = ContextManager()
-normalizer = DataNormalizer(context_mgr=context_mgr)
-connectors_bus = UniversalConnector()
 stt_client = GnaniSTT(language_code=os.getenv("GNANI_LANGUAGE_CODE", "hi-IN"))
 tts_client = GnaniTTS(voice=os.getenv("GNANI_VOICE_NAME", "Nalini"))
 epsilon_bridge = EpsilonBridge()
@@ -73,17 +69,12 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = "default_user"
 
 
-class DispatchRequest(BaseModel):
-    action: str
-    target: str
-    raw_input: Optional[str] = None
-
-
 @app.get("/api/status")
 async def get_system_status():
-    """System health and integration state overview."""
+    """System health and context layer state overview."""
     epsilon_ok = await epsilon_bridge.check_health()
-    conn_statuses = await connectors_bus.get_connector_statuses()
+    triples_summary = context_engine.store.get_all_triples(limit=1)
+    vectors_summary = context_engine.store.get_all_semantic(limit=1)
     
     return {
         "status": "online",
@@ -98,7 +89,11 @@ async def get_system_status():
             "voice_name": tts_client.voice,
             "configured": bool(tts_client.api_key)
         },
-        "connectors": conn_statuses
+        "context_layer": {
+            "status": "active",
+            "has_graph": len(triples_summary) >= 0,
+            "has_vectors": len(vectors_summary) >= 0
+        }
     }
 
 
@@ -161,40 +156,6 @@ async def add_explicit_memory(req: ExplicitMemoryRequest):
     )
 
 
-@app.post("/api/connectors/sync")
-async def sync_all_connectors():
-    """Fetches real-time feeds from all connectors and ingests into Knowledge Graph."""
-    raw_items = await connectors_bus.fetch_all_external_data(per_service_limit=5)
-    stats = normalizer.sync_feed(raw_items)
-    
-    # Broadcast sync event to connected websockets
-    for ws in connected_clients:
-        try:
-            await ws.send_json({
-                "type": "MEMORY_SYNCED",
-                "stats": stats
-            })
-        except Exception:
-            pass
-
-    return {
-        "success": True,
-        "raw_items_fetched": len(raw_items),
-        "sync_stats": stats
-    }
-
-
-@app.post("/api/connectors/dispatch")
-async def dispatch_action(req: DispatchRequest):
-    """Manually or autonomously triggers an external action via the Universal Connector."""
-    intent = {
-        "action": req.action,
-        "target": req.target,
-        "raw_input": req.raw_input or f"Manual dispatch for {req.action}"
-    }
-    result = await connectors_bus.dispatch_work_intent(intent)
-    return result
-
 
 @app.post("/api/chat")
 async def process_chat(req: ChatRequest):
@@ -228,12 +189,6 @@ async def process_chat(req: ChatRequest):
     if semantic_memories:
         context_blocks.append("[Recalled Past Notes & Context]:\n" + "\n".join(f"- {m}" for m in semantic_memories))
     context_summary = "\n\n".join(context_blocks) if context_blocks else None
-
-    # Sync to legacy context manager for connector normalizer compatibility
-    try:
-        context_mgr.ingest_turn(user_text, "")
-    except Exception:
-        pass
 
     # 2. Query Epsilon LLM with dynamic identity, recalled context, and multi-turn history
     try:
@@ -304,35 +259,12 @@ async def process_chat(req: ChatRequest):
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}")
 
-    # 6. Check autonomous work intents (e.g. if user asks to email, message, calendar)
-    lower_text = user_text.lower()
-    intent_dispatched = None
-    if "email" in lower_text and "@" in user_text:
-        import re
-        m = re.search(r"[\w\.-]+@[\w\.-]+", user_text)
-        if m:
-            intent_dispatched = await connectors_bus.dispatch_work_intent({
-                "action": "EMAIL",
-                "target": m.group(0),
-                "raw_input": user_text
-            })
-    elif "whatsapp" in lower_text or "message" in lower_text:
-        import re
-        m = re.search(r"\+?\d{10,12}", user_text)
-        if m:
-            intent_dispatched = await connectors_bus.dispatch_work_intent({
-                "action": "WHATSAPP",
-                "target": m.group(0),
-                "raw_input": user_text
-            })
-
     return {
         "reply": reply_text,
         "context_used": context_summary or "None",
         "retrieval": retrieval,
         "extracted_facts": turn_result.get("extracted_facts", []),
-        "audio_base64": audio_b64,
-        "work_intent": intent_dispatched
+        "audio_base64": audio_b64
     }
 
 
@@ -375,8 +307,7 @@ async def process_voice(
             "context_used": "None",
             "retrieval": {},
             "extracted_facts": [],
-            "audio_base64": audio_b64,
-            "work_intent": None
+            "audio_base64": audio_b64
         }
 
     # 2. Run chat processing with the transcribed text and user_id
@@ -392,8 +323,7 @@ async def process_voice(
         "context_used": chat_resp["context_used"],
         "retrieval": chat_resp.get("retrieval"),
         "extracted_facts": chat_resp.get("extracted_facts"),
-        "audio_base64": chat_resp["audio_base64"],
-        "work_intent": chat_resp.get("work_intent")
+        "audio_base64": chat_resp["audio_base64"]
     }
 
 

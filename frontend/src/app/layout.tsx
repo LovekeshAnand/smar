@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "SMAR — Memory-Driven Autonomous Voice Platform",
   description:
-    "Autonomous voice intelligence grounded in persistent Knowledge Graph memory, local Epsilon 7B LLM, and universal connectors.",
+    "Autonomous voice intelligence grounded in persistent Knowledge Graph memory, subword vector retrieval, and local Epsilon 7B LLM.",
 };
 
 export default function RootLayout({

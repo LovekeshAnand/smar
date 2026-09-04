@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SMAR — Memory-Driven Autonomous Voice Platform</title>
-  <meta name="description" content="Futuristic autonomous voice assistant powered by Epsilon 7B, Knowledge Graph context memory, Gnani multilingual voice, and universal connectors.">
+  <meta name="description" content="Futuristic autonomous voice assistant powered by Epsilon 7B, Knowledge Graph context memory, and Gnani multilingual voice.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -45,10 +45,6 @@
     </div>
 
     <div class="header-right">
-      <button class="btn btn-secondary" id="sync-connectors-btn" title="Fetch and ingest feeds from WhatsApp, Gmail, and Google Cloud">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
-        <span>Sync Context</span>
-      </button>
       <div class="system-status-badge" id="system-badge">
         <span class="pulse-ring"></span>
         <span class="status-txt">ONLINE</span>
@@ -132,13 +128,12 @@
       </div>
     </section>
 
-    <!-- Right: Memory Inspector & Connector Hub -->
+    <!-- Right: Memory Inspector (Knowledge Graph & Vectors) -->
     <section class="panel panel-right" id="panel-context">
       <div class="panel-header">
         <div class="tab-nav">
           <button class="tab-btn active" data-tab="tab-kg">Knowledge Graph</button>
           <button class="tab-btn" data-tab="tab-vectors">Vector Memory</button>
-          <button class="tab-btn" data-tab="tab-connectors">Connectors</button>
         </div>
       </div>
 
@@ -161,17 +156,6 @@
         </div>
         <div class="vectors-list" id="vectors-container">
           <div class="empty-state">Loading semantic chunks...</div>
-        </div>
-      </div>
-
-      <!-- Tab 3: Connectors Hub -->
-      <div class="tab-content" id="tab-connectors">
-        <div class="tab-subbar">
-          <span class="subbar-info">External Feeds & Work Intent Bus</span>
-          <button class="btn-tiny" id="refresh-connectors-btn">Check Health</button>
-        </div>
-        <div class="connectors-grid" id="connectors-list">
-          <!-- Populated by JS -->
         </div>
       </div>
     </section>

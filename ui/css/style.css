@@ -685,7 +685,7 @@ body {
 }
 
 /* ==========================================================
-   Right Panel: Memory Inspector & Connector Hub
+   Right Panel: Memory Inspector (Knowledge Graph & Vectors)
    ========================================================== */
 .tab-nav {
   display: flex;
@@ -740,7 +740,7 @@ body {
 }
 
 /* Triples List */
-.triples-list, .vectors-list, .connectors-grid {
+.triples-list, .vectors-list {
   flex: 1;
   overflow-y: auto;
   padding: 14px;
@@ -830,49 +830,7 @@ body {
   line-height: 1.4;
 }
 
-/* Connector Service Card */
-.connector-card {
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
-  background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  transition: all 0.2s;
-}
 
-.connector-card:hover {
-  border-color: rgba(255, 255, 255, 0.15);
-}
-
-.conn-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.conn-name {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: #fff;
-}
-
-.conn-status-tag {
-  font-size: 0.68rem;
-  font-family: var(--font-mono);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.conn-status-tag.online {
-  color: var(--neon-emerald);
-}
-
-.conn-status-tag.offline {
-  color: var(--text-muted);
-}
 
 .empty-state {
   text-align: center;

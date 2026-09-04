@@ -11,7 +11,6 @@ import {
   MemoryInspector,
   KGTriple,
   VectorMemory,
-  ConnectorInfo,
 } from "@/components/MemoryInspector";
 import { VoiceController } from "@/components/VoiceController";
 import { encodeWAV } from "@/lib/audio";
@@ -31,8 +30,6 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [triples, setTriples] = useState<KGTriple[]>([]);
   const [vectors, setVectors] = useState<VectorMemory[]>([]);
-  const [connectors, setConnectors] = useState<Record<string, ConnectorInfo>>({});
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(true);
   const [language, setLanguage] = useState<string>("en-IN");
@@ -93,8 +90,6 @@ export default function Home() {
         setIsConnected(false);
         return;
       }
-      const data = await res.json();
-      setConnectors(data.connectors || {});
       setIsConnected(true);
     } catch {
       setIsConnected(false);
@@ -123,19 +118,6 @@ export default function Home() {
     }
   };
 
-  const handleSyncAll = async () => {
-    setIsSyncing(true);
-    try {
-      await fetch("/api/connectors/sync", { method: "POST" });
-      fetchMemoryGraph();
-      fetchMemoryVectors();
-      fetchSystemStatus();
-    } catch (e: any) {
-      console.error(e);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
 
   const toggleMicrophone = async () => {
     if (isRecording) {
@@ -394,12 +376,8 @@ export default function Home() {
         onClose={() => setIsMemoryOpen(false)}
         triples={triples}
         vectors={vectors}
-        connectors={connectors}
         onRefreshGraph={fetchMemoryGraph}
         onRefreshVectors={fetchMemoryVectors}
-        onRefreshConnectors={fetchSystemStatus}
-        onSyncAll={handleSyncAll}
-        isSyncing={isSyncing}
       />
 
       {/* Hidden audio element for speech playback */}

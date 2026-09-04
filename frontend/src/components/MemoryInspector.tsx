@@ -17,23 +17,13 @@ export interface VectorMemory {
   updated_at: number;
 }
 
-export interface ConnectorInfo {
-  name: string;
-  connected: boolean;
-  status: string;
-}
-
 interface MemoryInspectorProps {
   isOpen: boolean;
   onClose: () => void;
   triples: KGTriple[];
   vectors: VectorMemory[];
-  connectors: Record<string, ConnectorInfo>;
   onRefreshGraph: () => void;
   onRefreshVectors: () => void;
-  onRefreshConnectors: () => void;
-  onSyncAll: () => void;
-  isSyncing: boolean;
 }
 
 export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
@@ -41,14 +31,10 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
   onClose,
   triples,
   vectors,
-  connectors,
   onRefreshGraph,
   onRefreshVectors,
-  onRefreshConnectors,
-  onSyncAll,
-  isSyncing,
 }) => {
-  const [activeTab, setActiveTab] = useState<"kg" | "vectors" | "connectors">("kg");
+  const [activeTab, setActiveTab] = useState<"kg" | "vectors">("kg");
 
   if (!isOpen) return null;
 
@@ -82,7 +68,7 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
             activeTab === "kg" ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
           }`}
         >
-          Graph
+          Knowledge Graph
         </button>
         <button
           onClick={() => setActiveTab("vectors")}
@@ -90,15 +76,7 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
             activeTab === "vectors" ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
           }`}
         >
-          Vectors
-        </button>
-        <button
-          onClick={() => setActiveTab("connectors")}
-          className={`px-3 py-1 rounded-md text-xs font-mono transition-all ${
-            activeTab === "connectors" ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
-          }`}
-        >
-          Connectors
+          Vectors ({vectors.length})
         </button>
       </div>
 
@@ -107,7 +85,7 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
         {activeTab === "kg" && (
           <div className="space-y-2">
             <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono pb-1">
-              <span>Triples</span>
+              <span>Relational Triples</span>
               <button onClick={onRefreshGraph} className="hover:text-slate-300">
                 Refresh
               </button>
@@ -131,7 +109,7 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
         {activeTab === "vectors" && (
           <div className="space-y-2">
             <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono pb-1">
-              <span>Embeddings</span>
+              <span>Semantic Memory Chunks</span>
               <button onClick={onRefreshVectors} className="hover:text-slate-300">
                 Refresh
               </button>
@@ -146,36 +124,6 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
                 </div>
               ))
             )}
-          </div>
-        )}
-
-        {activeTab === "connectors" && (
-          <div className="space-y-3">
-            <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono pb-1">
-              <span>Services</span>
-              <button
-                onClick={onSyncAll}
-                disabled={isSyncing}
-                className="text-cyan-400 hover:text-cyan-300 disabled:opacity-50"
-              >
-                {isSyncing ? "Syncing..." : "Sync All"}
-              </button>
-            </div>
-            {Object.entries(connectors).map(([key, c]) => (
-              <div
-                key={key}
-                className="p-3 rounded-lg bg-white/[0.02] border border-white/5 flex items-center justify-between"
-              >
-                <span className="text-slate-200 text-xs">{c.name}</span>
-                <span
-                  className={`text-[11px] font-mono ${
-                    c.connected ? "text-emerald-400" : "text-slate-600"
-                  }`}
-                >
-                  {c.connected ? "Active" : "Standby"}
-                </span>
-              </div>
-            ))}
           </div>
         )}
       </div>

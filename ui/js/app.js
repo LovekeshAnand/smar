@@ -21,8 +21,8 @@ let ttsAnalyser = null;
 
 // DOM Elements
 let micBtn, chatForm, textInput, transcriptFeed, msgCountEl;
-let kgTriplesCountEl, triplesContainer, vectorsContainer, connectorsList;
-let ttsPlayer, syncConnectorsBtn, refreshKgBtn, refreshVectorsBtn, refreshConnectorsBtn;
+let kgTriplesCountEl, triplesContainer, vectorsContainer;
+let ttsPlayer, refreshKgBtn, refreshVectorsBtn;
 
 document.addEventListener("DOMContentLoaded", () => {
   // Bind DOM elements
@@ -34,12 +34,9 @@ document.addEventListener("DOMContentLoaded", () => {
   kgTriplesCountEl = document.getElementById("kg-triples-count");
   triplesContainer = document.getElementById("triples-container");
   vectorsContainer = document.getElementById("vectors-container");
-  connectorsList = document.getElementById("connectors-list");
   ttsPlayer = document.getElementById("tts-audio-player");
-  syncConnectorsBtn = document.getElementById("sync-connectors-btn");
   refreshKgBtn = document.getElementById("refresh-kg-btn");
   refreshVectorsBtn = document.getElementById("refresh-vectors-btn");
-  refreshConnectorsBtn = document.getElementById("refresh-connectors-btn");
 
   initEventHandlers();
   initTabNavigation();
@@ -66,13 +63,9 @@ function initEventHandlers() {
     }
   });
 
-  // Sync connectors button
-  syncConnectorsBtn.addEventListener("click", handleSyncConnectors);
-
   // Refresh buttons
   refreshKgBtn.addEventListener("click", refreshMemoryGraph);
   refreshVectorsBtn.addEventListener("click", refreshMemoryVectors);
-  refreshConnectorsBtn.addEventListener("click", fetchSystemStatus);
 
   // Audio player setup for reactive speech visualizer
   setupTTSVisualizerHook();
@@ -523,58 +516,15 @@ async function refreshMemoryVectors() {
 }
 
 /**
- * Fetch System Status and Connectors
+ * Fetch System Status
  */
 async function fetchSystemStatus() {
   try {
     const res = await fetch("/api/status");
     if (!res.ok) return;
     const data = await res.json();
-
-    // Render connectors
-    connectorsList.innerHTML = "";
-    const conns = data.connectors || {};
-    for (const [key, c] of Object.entries(conns)) {
-      const card = document.createElement("div");
-      card.className = "connector-card";
-      const isOnline = c.connected;
-      card.innerHTML = `
-        <div class="conn-info">
-          <span class="conn-name">${escapeHtml(c.name)}</span>
-          <span class="conn-status-tag ${isOnline ? "online" : "offline"}">
-            <span class="dot ${isOnline ? "online" : ""}"></span>
-            ${isOnline ? "Connected & Active" : "Configured / Standby"}
-          </span>
-        </div>
-      `;
-      connectorsList.appendChild(card);
-    }
   } catch (err) {
     console.error("Error fetching status:", err);
-  }
-}
-
-/**
- * Synchronize all external feeds
- */
-async function handleSyncConnectors() {
-  syncConnectorsBtn.disabled = true;
-  syncConnectorsBtn.querySelector("span").textContent = "Syncing...";
-
-  try {
-    const res = await fetch("/api/connectors/sync", { method: "POST" });
-    const data = await res.json();
-
-    alert(`Synced! Processed ${data.raw_items_fetched} items. Triples added: ${data.sync_stats.ingested_triples}, Vectors: ${data.sync_stats.ingested_vectors}`);
-
-    refreshMemoryGraph();
-    refreshMemoryVectors();
-    fetchSystemStatus();
-  } catch (err) {
-    alert("Error syncing connectors: " + err.message);
-  } finally {
-    syncConnectorsBtn.disabled = false;
-    syncConnectorsBtn.querySelector("span").textContent = "Sync Context";
   }
 }
 
