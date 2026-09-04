@@ -134,26 +134,7 @@ async def get_memory_graph(user_id: Optional[str] = None):
 @app.get("/api/memory/vectors")
 async def get_memory_vectors(user_id: Optional[str] = None):
     """Returns recent semantic memory chunks stored in vector database."""
-    target_user = user_id or "default_user"
-    with context_engine.store._get_conn() as conn:
-        cursor = conn.cursor()
-        if user_id:
-            cursor.execute(
-                "SELECT id, content, category, updated_at FROM semantic_memories WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
-                (target_user,)
-            )
-        else:
-            cursor.execute("SELECT id, content, category, updated_at FROM semantic_memories ORDER BY updated_at DESC LIMIT 50")
-        rows = cursor.fetchall()
-    
-    items = []
-    for r in rows:
-        items.append({
-            "id": r["id"],
-            "content": r["content"],
-            "category": r["category"],
-            "updated_at": r["updated_at"]
-        })
+    items = context_engine.store.get_all_semantic(user_id=user_id, limit=50)
     return {"count": len(items), "items": items}
 
 
@@ -257,7 +238,52 @@ async def process_chat(req: ChatRequest):
         logger.error(f"Epsilon generation error: {e}")
         reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
 
-    # 3. Synthesize voice with Gnani TTS
+    # 3. Ingest complete dialogue turn into semantic memory
+    try:
+        context_engine.store.upsert_semantic(
+            user_id=user_id,
+            text=f"User: {user_text}\nAssistant: {reply_text}",
+            category="conversation"
+        )
+        context_mgr.ingest_turn(user_text, reply_text)
+    except Exception as e:
+        logger.debug(f"Turn memory ingestion error: {e}")
+
+    # 4. Background Cognitive Knowledge Formation via Local LLM
+    async def _async_knowledge_formation():
+        try:
+            llm_facts = await context_engine.pipeline.extract_facts_llm(
+                user_text=user_text,
+                reply_text=reply_text,
+                user_id=user_id,
+                api_base=context_config.epsilon_api_base
+            )
+            if llm_facts:
+                for f in llm_facts:
+                    context_engine.store.upsert_triple(
+                        user_id=user_id,
+                        subject=f["subject"],
+                        predicate=f["predicate"],
+                        object_val=f["object"],
+                        confidence=f.get("confidence", 0.95)
+                    )
+                logger.info(f"Dynamically formed {len(llm_facts)} new facts for '{user_id}': {llm_facts}")
+                # Broadcast memory update to connected web clients
+                for ws in connected_clients:
+                    try:
+                        await ws.send_json({
+                            "type": "MEMORY_UPDATED",
+                            "user_id": user_id,
+                            "facts": llm_facts
+                        })
+                    except Exception:
+                        pass
+        except Exception as err:
+            logger.debug(f"Background cognitive extraction error: {err}")
+
+    asyncio.create_task(_async_knowledge_formation())
+
+    # 5. Synthesize voice with Gnani TTS
     audio_b64 = None
     try:
         audio_bytes = await tts_client.synthesize(reply_text, voice=req.voice or tts_client.voice)
@@ -266,7 +292,7 @@ async def process_chat(req: ChatRequest):
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}")
 
-    # 4. Check autonomous work intents (e.g. if user asks to email, message, calendar)
+    # 6. Check autonomous work intents (e.g. if user asks to email, message, calendar)
     lower_text = user_text.lower()
     intent_dispatched = None
     if "email" in lower_text and "@" in user_text:

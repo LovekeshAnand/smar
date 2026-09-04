@@ -51,6 +51,27 @@ export default function Home() {
     fetchMemoryGraph();
     fetchMemoryVectors();
 
+    // Setup live WebSocket for automatic real-time memory updates
+    let ws: WebSocket | null = null;
+    try {
+      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsHost = window.location.port === "3000" ? `${window.location.hostname}:5000` : window.location.host;
+      ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/live`);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "MEMORY_UPDATED" || msg.type === "MEMORY_SYNCED") {
+            fetchMemoryGraph();
+            fetchMemoryVectors();
+          }
+        } catch {
+          // ignore non-json messages
+        }
+      };
+    } catch (e) {
+      console.warn("WebSocket connection not available:", e);
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && (e.target as HTMLElement).tagName !== "INPUT") {
         e.preventDefault();
@@ -58,7 +79,10 @@ export default function Home() {
       }
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      if (ws) ws.close();
+    };
   }, []);
 
   const fetchSystemStatus = async () => {
@@ -222,6 +246,10 @@ export default function Home() {
 
       fetchMemoryGraph();
       fetchMemoryVectors();
+      setTimeout(() => {
+        fetchMemoryGraph();
+        fetchMemoryVectors();
+      }, 1500);
     } catch {
       setVisualizerState("IDLE");
     }
@@ -264,6 +292,10 @@ export default function Home() {
 
       fetchMemoryGraph();
       fetchMemoryVectors();
+      setTimeout(() => {
+        fetchMemoryGraph();
+        fetchMemoryVectors();
+      }, 1500);
     } catch {
       setVisualizerState("IDLE");
     }

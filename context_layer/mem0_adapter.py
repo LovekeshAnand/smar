@@ -138,5 +138,12 @@ class Mem0StoreAdapter(BaseMemoryStore):
 
         return self.fallback.search_semantic(user_id, query, top_k, min_similarity)
 
+    def get_all_semantic(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        return self.fallback.get_all_semantic(user_id, limit)
+
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         return self.fallback.get_user_profile(user_id)

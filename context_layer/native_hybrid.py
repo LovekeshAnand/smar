@@ -416,6 +416,26 @@ class NativeHybridStore(BaseMemoryStore):
         scored.sort(key=lambda x: x["similarity"], reverse=True)
         return scored[:top_k]
 
+    def get_all_semantic(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Returns recent semantic memory chunks, optionally filtered by user_id."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute(
+                    "SELECT id, user_id, content, category, access_count, updated_at FROM semantic_memories WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
+                    (user_id.strip(), limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, user_id, content, category, access_count, updated_at FROM semantic_memories ORDER BY updated_at DESC LIMIT ?",
+                    (limit,)
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """Synthesizes known structured attributes for the specified user."""
         user_clean = user_id.strip() or "default_user"
@@ -425,31 +445,48 @@ class NativeHybridStore(BaseMemoryStore):
             "email": None,
             "location": None,
             "profession": None,
+            "project": None,
             "preferences": []
         }
 
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            # Fetch triples where subject is user_id or 'user' or 'i'
+            # 1. First find if user has a verified Name triple
             cursor.execute("""
+                SELECT object FROM kg_triples
+                WHERE user_id = ? AND LOWER(predicate) IN ('name', 'named', 'fullname')
+                ORDER BY updated_at DESC LIMIT 1
+            """, (user_clean,))
+            name_row = cursor.fetchone()
+            if name_row:
+                profile["name"] = name_row["object"]
+
+            subjects = [user_clean.lower(), 'user', 'i', 'me']
+            if profile["name"]:
+                subjects.append(profile["name"].lower())
+
+            placeholders = ",".join("?" * len(subjects))
+            cursor.execute(f"""
                 SELECT predicate, object FROM kg_triples
-                WHERE user_id = ? AND LOWER(subject) IN (?, 'user', 'i', 'me')
+                WHERE user_id = ? AND LOWER(subject) IN ({placeholders})
                 ORDER BY updated_at DESC
-            """, (user_clean, user_clean.lower()))
+            """, [user_clean] + subjects)
             rows = cursor.fetchall()
 
             for r in rows:
                 pred = r["predicate"].lower().replace("_", "").replace(" ", "")
                 val = r["object"]
-                if pred in ("name", "fullname", "username") and not profile["name"]:
+                if pred in ("name", "fullname", "username", "named") and not profile["name"]:
                     profile["name"] = val
-                elif pred in ("email", "primaryemail", "mail") and not profile["email"]:
+                elif pred in ("email", "primaryemail", "mail", "hasemail") and not profile["email"]:
                     profile["email"] = val
                 elif pred in ("location", "livesin", "currentcity", "city") and not profile["location"]:
                     profile["location"] = val
-                elif pred in ("role", "jobtitle", "profession", "worksat", "title") and not profile["profession"]:
+                elif pred in ("role", "jobtitle", "profession", "worksat", "title", "isa") and not profile["profession"]:
                     profile["profession"] = val
-                elif pred in ("prefers", "likes", "favorite", "interest", "speaks"):
+                elif pred in ("building", "workson", "project", "product") and not profile["project"]:
+                    profile["project"] = val
+                elif pred in ("prefers", "likes", "favorite", "interest", "speaks", "usestechnology", "hasskill"):
                     pref_str = f"{r['predicate']}: {val}"
                     if pref_str not in profile["preferences"]:
                         profile["preferences"].append(pref_str)

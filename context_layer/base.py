@@ -68,6 +68,15 @@ class BaseMemoryStore(ABC):
         pass
 
     @abstractmethod
+    def get_all_semantic(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Returns recent semantic memory chunks."""
+        pass
+
+    @abstractmethod
     def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """Synthesizes known key attributes for the specified user (name, email, preferences)."""
         pass

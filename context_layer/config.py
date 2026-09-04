@@ -39,5 +39,5 @@ class ContextConfig:
     provider: str = os.getenv("SMAR_MEMORY_PROVIDER", "auto")
     
     # LLM inference endpoint for Mem0 / local embedding
-    epsilon_api_base: str = os.getenv("EPSILON_API_BASE", "http://127.0.0.1:8088/v1")
+    epsilon_api_base: str = os.getenv("EPSILON_API_BASE", "http://127.0.0.1:8088")
     epsilon_model: str = "qwen2.5-coder-7b-instruct"
