@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables & secrets
+.env
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Large Model Weights (GGUF, bin, weights)
+core/models/
+*.gguf
+*.bin
+*.pt
+*.safetensors
+
+# Native compiled binaries and shared libraries
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Databases & local state
+*.sqlite
+*.sqlite3
+data/*.db
+data/uploads/
+
+# Audio scratch files
+*.wav
+*.mp3
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

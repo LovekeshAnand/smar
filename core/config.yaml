@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Epsilon IDE Engine v2.2 — Three-Tier Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+model_tier: "auto"   # fast | balanced | deep | auto
+
+# ── llama-server binary ───────────────────────────────────────────────────────
+# REQUIRED: absolute path to the llama-server executable.
+# Previously this was hardcoded; now it comes from here so swaps work correctly.
+llama_server_bin: "/mnt/d/epsilon/v2/BitNet/build/bin/llama-server"
+
+# ── Model definitions ─────────────────────────────────────────────────────────
+models:
+  fast:
+    path:        "/mnt/d/epsilon/v2/BitNet/models/Qwen2.5-Coder-1.5B/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+    gpu_layers:  28
+    context_len: 1024
+    max_tokens:  256
+    temperature: 0.0
+    description: "Qwen2.5-Coder 1.5B — tab completions and simple functions"
+
+  balanced:
+    path:        "/mnt/d/epsilon/v2/BitNet/models/Qwen2.5-Coder-7B/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+    gpu_layers:  32
+    context_len: 2048
+    max_tokens:  1024
+    temperature: 0.05
+    description: "Qwen2.5-Coder 7B — full files and complex generation"
+
+  deep:
+    path:        "/mnt/d/epsilon/v2/BitNet/models/DeepSeek-Coder-33B/deepseek-coder-33b-instruct.Q4_K_M.gguf"
+    gpu_layers:  0
+    context_len: 4096
+    max_tokens:  2048
+    temperature: 0.1
+    description: "DeepSeek-Coder 33B — system design and architecture"
+
+# ── Complexity thresholds ─────────────────────────────────────────────────────
+# Scores: 0-2 → fast | 3-6 → balanced | 7-10 → deep
+routing:
+  fast_max:     2
+  balanced_max: 6
+  deep_min:     7
+
+# ── Server settings ───────────────────────────────────────────────────────────
+server_port: 8088
+server_host: localhost
+cpu_threads: 4
+
+# ── Memory and search ─────────────────────────────────────────────────────────
+db_path:        /mnt/d/epsilon/v2/clara.db
+project_dir:    /mnt/d/epsilon/v2
+crawl_on_start: false
+memory_path:    /mnt/d/epsilon/v2/conversation.json
+memory_turns:   10
+
+# ── Telegram ──────────────────────────────────────────────────────────────────
+telegram_token:         "YOUR_BOT_TOKEN_HERE"
+telegram_allowed_users: []
+
+# ── VRAM management ───────────────────────────────────────────────────────────
+# Unload model after N seconds idle (frees VRAM while you're not coding)
+idle_timeout: 300
+
+# ── Debug ─────────────────────────────────────────────────────────────────────
+debug:     false
+log_level: "INFO"
