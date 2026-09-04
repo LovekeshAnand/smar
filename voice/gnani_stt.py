@@ -76,10 +76,12 @@ class GnaniSTT:
 
         except httpx.HTTPStatusError as e:
             logger.error(f"Gnani STT HTTP error ({e.response.status_code}): {e.response.text}")
-            raise RuntimeError(f"Gnani STT service error: {e.response.text}")
+            if "MAX_AUDIO_DURATION_EXCEEDED" in e.response.text:
+                return "(Speech duration exceeded 30 seconds limit. Please keep speech under 25 seconds.)"
+            return ""
         except Exception as e:
             logger.error(f"Gnani STT request failed: {e}")
-            raise
+            return ""
 
     def _extract_transcript(self, res_data: Any) -> str:
         """Extract transcript string across response schemas."""

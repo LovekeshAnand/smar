@@ -194,11 +194,11 @@ class KnowledgeFormationPipeline:
         user_clean = user_id.strip() or "default_user"
         prompt = (
             "<|im_start|>system\n"
-            f"You are a knowledge graph extractor. Analyze the conversation turn and extract any personal facts, preferences, background, work, location, projects, or relationships stated by or about the User ({user_clean}).\n"
+            f"You are a knowledge graph extractor. Analyze the conversation turn and extract ONLY concrete personal facts, preferences, background, work, location, projects, or relationships explicitly stated by or about the User ({user_clean}).\n"
             f"Always use '{user_clean}' as the subject for facts about the user.\n"
             "Return ONLY a JSON array of objects with keys: 'subject', 'predicate', 'object'.\n"
             "Predicate should be concise PascalCase (e.g. LivesIn, Role, WorksOn, Prefers, HasSkill, PlansTo, StudiedAt).\n"
-            "If no personal facts about the user are mentioned, return []. Do not include commentary.\n"
+            "CRITICAL: If a detail is NOT mentioned, DO NOT include it! NEVER output placeholders like 'Not specified', 'Unknown', 'None', or 'N/A'. If no personal facts are stated, return [].\n"
             "<|im_end|>\n"
             "<|im_start|>user\n"
             f"User: {user_text}\n"
@@ -228,9 +228,7 @@ class KnowledgeFormationPipeline:
                     return []
 
                 raw = res.json().get("content", "").strip()
-                # Reconstruct opening bracket
                 full_json = "[" + raw
-                # Find the closing bracket if trailing text exists
                 end_idx = full_json.rfind("]")
                 if end_idx != -1:
                     full_json = full_json[:end_idx + 1]
@@ -238,14 +236,25 @@ class KnowledgeFormationPipeline:
                     full_json += "]"
 
                 parsed = json.loads(full_json)
+                invalid_placeholders = {
+                    "not specified", "unknown", "none", "n/a", "unspecified",
+                    "null", "not mentioned", "not provided", "tbd", "n.a.",
+                    "nothing", "not available", "none specified", "no info", "not given"
+                }
+
                 valid_facts = []
                 for item in parsed:
                     if isinstance(item, dict) and "predicate" in item and "object" in item:
                         sub = item.get("subject", user_clean).strip()
                         pred = item.get("predicate", "").strip()
                         obj = item.get("object", "").strip()
+
+                        # Discard invalid or placeholder objects
+                        low_obj = obj.lower()
+                        if low_obj in invalid_placeholders or any(low_obj.startswith(p) for p in ("not specified", "not mentioned", "unknown", "unspecified")):
+                            continue
+
                         if pred and obj and len(obj) >= 2:
-                            # Normalize user subject
                             if sub.lower() in ("user", "i", "me", user_clean.lower()):
                                 sub = user_clean
                             valid_facts.append({

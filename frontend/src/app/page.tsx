@@ -45,6 +45,7 @@ export default function Home() {
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const ttsAnalyserRef = useRef<AnalyserNode | null>(null);
   const isHookedRef = useRef<boolean>(false);
+  const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     fetchSystemStatus();
@@ -180,6 +181,12 @@ export default function Home() {
       setIsRecording(true);
       setVisualizerState("LISTENING");
 
+      // Auto-stop recording at 25 seconds to respect Gnani STT limits
+      if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = setTimeout(() => {
+        stopRecording();
+      }, 25000);
+
       const dataArr = new Uint8Array(64);
       const updateMic = () => {
         if (analyser && micStreamRef.current) {
@@ -195,6 +202,10 @@ export default function Home() {
   };
 
   const stopRecording = () => {
+    if (recordingTimeoutRef.current) {
+      clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
     setIsRecording(false);
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach((t) => t.stop());

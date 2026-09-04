@@ -360,6 +360,25 @@ async def process_voice(
     if not transcription or not transcription.strip():
         transcription = "(unrecognized speech)"
 
+    if transcription.startswith("(Speech duration exceeded"):
+        reply_text = "I heard you speaking for over 30 seconds! To keep our voice conversation smooth, please keep each speech under 25 seconds."
+        audio_b64 = None
+        try:
+            ab = await tts_client.synthesize(reply_text, voice=tts_client.voice)
+            if ab:
+                audio_b64 = base64.b64encode(ab).decode("utf-8")
+        except Exception:
+            pass
+        return {
+            "transcription": transcription,
+            "reply": reply_text,
+            "context_used": "None",
+            "retrieval": {},
+            "extracted_facts": [],
+            "audio_base64": audio_b64,
+            "work_intent": None
+        }
+
     # 2. Run chat processing with the transcribed text and user_id
     chat_resp = await process_chat(ChatRequest(
         text=transcription,
