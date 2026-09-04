@@ -1,0 +1,317 @@
+"""
+server.py
+=========
+FastAPI Backend Server for SMAR Autonomous Voice & Memory System.
+Serves the web dashboard and handles real-time voice, chat, context synchronization,
+knowledge graph inspection, and autonomous background actions.
+"""
+
+import os
+import sys
+import json
+import base64
+import asyncio
+import logging
+from typing import Optional, Dict, Any, List
+from pathlib import Path
+
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, Response, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Load environment
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("smar.server")
+
+# Import SMAR core components
+from core.epsilon_bridge import EpsilonBridge
+from voice.gnani_stt import GnaniSTT
+from voice.gnani_tts import GnaniTTS
+from memory.context_manager import ContextManager
+from memory.normalizer import DataNormalizer
+from connectors.universal import UniversalConnector
+
+app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
+
+# Allow CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize singletons
+context_mgr = ContextManager()
+normalizer = DataNormalizer(context_mgr=context_mgr)
+connectors_bus = UniversalConnector()
+stt_client = GnaniSTT(language_code=os.getenv("GNANI_LANGUAGE_CODE", "hi-IN"))
+tts_client = GnaniTTS(voice=os.getenv("GNANI_VOICE_NAME", "Nalini"))
+epsilon_bridge = EpsilonBridge()
+
+# Active WebSocket clients
+connected_clients: List[WebSocket] = []
+
+
+class ChatRequest(BaseModel):
+    text: str
+    voice: Optional[str] = None
+    language: Optional[str] = None
+
+
+class DispatchRequest(BaseModel):
+    action: str
+    target: str
+    raw_input: Optional[str] = None
+
+
+@app.get("/api/status")
+async def get_system_status():
+    """System health and integration state overview."""
+    epsilon_ok = await epsilon_bridge.check_health()
+    conn_statuses = await connectors_bus.get_connector_statuses()
+    
+    return {
+        "status": "online",
+        "epsilon_llm": {
+            "online": epsilon_ok,
+            "endpoint": epsilon_bridge.api_base,
+            "model": "Qwen2.5-Coder 7B Instruct (GGUF)"
+        },
+        "voice": {
+            "stt_provider": "Gnani / Vachana.ai (Prisma v2.5)",
+            "tts_provider": "Gnani / Vachana.ai (Timbre v2.5)",
+            "voice_name": tts_client.voice,
+            "configured": bool(tts_client.api_key)
+        },
+        "connectors": conn_statuses
+    }
+
+
+@app.get("/api/memory/graph")
+async def get_memory_graph():
+    """Returns knowledge graph entities and relational facts."""
+    cursor = context_mgr.kg._get_conn().cursor()
+    cursor.execute("SELECT subject, predicate, object, confidence, updated_at FROM kg_triples ORDER BY updated_at DESC LIMIT 100")
+    rows = cursor.fetchall()
+    
+    triples = []
+    nodes = set()
+    for r in rows:
+        triples.append({
+            "subject": r["subject"],
+            "predicate": r["predicate"],
+            "object": r["object"],
+            "confidence": r["confidence"],
+            "updated_at": r["updated_at"]
+        })
+        nodes.add(r["subject"])
+        nodes.add(r["object"])
+
+    return {
+        "nodes_count": len(nodes),
+        "triples_count": len(triples),
+        "triples": triples
+    }
+
+
+@app.get("/api/memory/vectors")
+async def get_memory_vectors():
+    """Returns recent semantic memory chunks stored in vector database."""
+    cursor = context_mgr.vectors._get_conn().cursor()
+    cursor.execute("SELECT id, content, category, updated_at FROM semantic_memories ORDER BY updated_at DESC LIMIT 50")
+    rows = cursor.fetchall()
+    
+    items = []
+    for r in rows:
+        items.append({
+            "id": r["id"],
+            "content": r["content"],
+            "category": r["category"],
+            "updated_at": r["updated_at"]
+        })
+    return {"count": len(items), "items": items}
+
+
+@app.post("/api/connectors/sync")
+async def sync_all_connectors():
+    """Fetches real-time feeds from all connectors and ingests into Knowledge Graph."""
+    raw_items = await connectors_bus.fetch_all_external_data(per_service_limit=5)
+    stats = normalizer.sync_feed(raw_items)
+    
+    # Broadcast sync event to connected websockets
+    for ws in connected_clients:
+        try:
+            await ws.send_json({
+                "type": "MEMORY_SYNCED",
+                "stats": stats
+            })
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "raw_items_fetched": len(raw_items),
+        "sync_stats": stats
+    }
+
+
+@app.post("/api/connectors/dispatch")
+async def dispatch_action(req: DispatchRequest):
+    """Manually or autonomously triggers an external action via the Universal Connector."""
+    intent = {
+        "action": req.action,
+        "target": req.target,
+        "raw_input": req.raw_input or f"Manual dispatch for {req.action}"
+    }
+    result = await connectors_bus.dispatch_work_intent(intent)
+    return result
+
+
+@app.post("/api/chat")
+async def process_chat(req: ChatRequest):
+    """Processes user text: injects context, queries Epsilon, extracts facts, synthesizes audio."""
+    user_text = req.text.strip()
+    if not user_text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    # 1. Retrieve hybrid context
+    context = context_mgr.retrieve_context(user_text)
+
+    # 2. Query Epsilon LLM
+    try:
+        reply_text = await epsilon_bridge.generate_reply(
+            user_prompt=user_text,
+            context=context,
+            max_tokens=256
+        )
+    except Exception as e:
+        logger.error(f"Epsilon generation error: {e}")
+        reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
+
+    # 3. Ingest turn into memory (Facts & Vector)
+    mem_update = context_mgr.ingest_turn(user_text, reply_text)
+
+    # 4. Synthesize voice with Gnani TTS
+    audio_b64 = None
+    try:
+        audio_bytes = await tts_client.synthesize(reply_text, voice=req.voice or tts_client.voice)
+        if audio_bytes:
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    except Exception as e:
+        logger.error(f"TTS synthesis error: {e}")
+
+    # 5. Check autonomous work intents (e.g. if user asks to email, message, calendar)
+    lower_text = user_text.lower()
+    intent_dispatched = None
+    if "email" in lower_text and "@" in user_text:
+        # Extract email target
+        import re
+        m = re.search(r"[\w\.-]+@[\w\.-]+", user_text)
+        if m:
+            intent_dispatched = await connectors_bus.dispatch_work_intent({
+                "action": "EMAIL",
+                "target": m.group(0),
+                "raw_input": user_text
+            })
+    elif "whatsapp" in lower_text or "message" in lower_text:
+        # Check phone
+        import re
+        m = re.search(r"\+?\d{10,12}", user_text)
+        if m:
+            intent_dispatched = await connectors_bus.dispatch_work_intent({
+                "action": "WHATSAPP",
+                "target": m.group(0),
+                "raw_input": user_text
+            })
+
+    return {
+        "reply": reply_text,
+        "context_used": context,
+        "memory_updated": mem_update,
+        "audio_base64": audio_b64,
+        "work_intent": intent_dispatched
+    }
+
+
+@app.post("/api/voice/process")
+async def process_voice(
+    audio_file: UploadFile = File(...),
+    language: Optional[str] = Form(None)
+):
+    """
+    Complete end-to-end voice pipeline:
+    Audio In (WAV) -> Gnani STT -> Context Retrieval -> Epsilon LLM -> Gnani TTS Audio Out
+    """
+    audio_bytes = await audio_file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio received.")
+
+    # 1. Transcribe audio via Gnani STT
+    lang = language or stt_client.language_code
+    transcription = await stt_client.transcribe_audio_bytes(
+        audio_bytes=audio_bytes,
+        language_code=lang
+    )
+
+    if not transcription or not transcription.strip():
+        transcription = "(unrecognized speech)"
+
+    # 2. Run chat processing with the transcribed text
+    chat_resp = await process_chat(ChatRequest(text=transcription, language=lang))
+
+    return {
+        "transcription": transcription,
+        "reply": chat_resp["reply"],
+        "context_used": chat_resp["context_used"],
+        "memory_updated": chat_resp["memory_updated"],
+        "audio_base64": chat_resp["audio_base64"],
+        "work_intent": chat_resp.get("work_intent")
+    }
+
+
+@app.websocket("/ws/live")
+async def live_websocket(websocket: WebSocket):
+    """Duplex websocket for real-time visualizer state, transcription, and status telemetry."""
+    await websocket.accept()
+    connected_clients.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            action = msg.get("action")
+            
+            if action == "PING":
+                await websocket.send_json({"type": "PONG"})
+    except WebSocketDisconnect:
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
+
+
+# Mount UI static directory
+ui_dir = Path(__file__).parent / "ui"
+os.makedirs(ui_dir, exist_ok=True)
+app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "5000"))
+    print(f"==================================================")
+    print(f"  SMAR Web Interface Running: http://127.0.0.1:{port}")
+    print(f"==================================================")
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

@@ -78,6 +78,15 @@ class EpsilonBridge:
         )
         return formatted
 
+    @property
+    def api_base(self) -> str:
+        port = self.tier_ports.get(self.active_tier, self.server_port)
+        return f"http://{self.server_host}:{port}"
+
+    async def check_health(self) -> bool:
+        """Alias for is_server_healthy."""
+        return await self.is_server_healthy()
+
     async def is_server_healthy(self, port: Optional[int] = None) -> bool:
         """Check if llama-server / inference endpoint is listening and healthy."""
         p = port or self.tier_ports.get(self.active_tier, self.server_port)
@@ -89,7 +98,25 @@ class EpsilonBridge:
         except Exception:
             return False
 
+    async def generate_reply(
+        self,
+        user_prompt: str,
+        context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 256,
+        temperature: float = 0.2
+    ) -> str:
+        """Convenience alias for generate()."""
+        return await self.generate(
+            prompt=user_prompt,
+            context=context,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+
     async def generate(
+
         self,
         prompt: str,
         context: Optional[str] = None,

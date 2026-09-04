@@ -80,13 +80,13 @@ class KnowledgeGraphStore:
 
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            # Ensure entity records exist
             for ent in [sub_norm, obj_norm]:
                 cursor.execute("""
                     INSERT INTO kg_entities (id, name, created_at, updated_at)
                     VALUES (?, ?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET updated_at = ?
-                """, (ent.lower(), ent, now, now, now))
+                    ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, name = excluded.name
+                """, (ent.lower(), ent, now, now))
+
 
             # Check if an existing triple with same (subject, predicate) exists
             cursor.execute("""

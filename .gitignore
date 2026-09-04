@@ -5,11 +5,22 @@ __pycache__/
 
 # Environment variables & secrets
 .env
+.env.*
+!.env.example
+*.token.json
+data/google_token.json
+credentials*.json
+client_secret*.json
+*.api-key
+*.key
 
-# Virtual environments
+# Virtual environments & node_modules
 venv/
 env/
 .venv/
+node_modules/
+frontend/node_modules/
+frontend/.next/
 
 # Large Model Weights (GGUF, bin, weights)
 core/models/
@@ -29,6 +40,7 @@ core/models/
 *.sqlite3
 data/*.db
 data/uploads/
+connectors/whatsapp/OpenWA/
 
 # Audio scratch files
 *.wav
