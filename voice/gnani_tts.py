@@ -1,13 +1,15 @@
 """
 voice/gnani_tts.py
 ==================
-Gnani.ai Text-to-Speech (TTS) REST API client for SMAR.
+Gnani / Vachana.ai Text-to-Speech (TTS) SSE Client for SMAR.
+Uses timbre-v2.5 streaming model via Server-Sent Events (SSE).
 """
 
 import os
+import json
 import base64
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, AsyncGenerator
 import httpx
 
 logger = logging.getLogger("smar.voice.gnani_tts")
@@ -15,87 +17,141 @@ logger = logging.getLogger("smar.voice.gnani_tts")
 
 class GnaniTTS:
     """
-    Text-to-Speech client for Gnani.ai REST service.
+    Text-to-Speech client for Gnani / Vachana.ai SSE REST API.
     """
     def __init__(
         self,
         api_key: Optional[str] = None,
-        token: Optional[str] = None,
         endpoint_url: Optional[str] = None,
-        language_code: Optional[str] = None,
-        voice_gender: Optional[str] = None,
+        voice: Optional[str] = None,
+        model: str = "timbre-v2.5",
+        sample_rate: int = 16000,
     ):
         self.api_key = api_key or os.getenv("GNANI_API_KEY", "")
-        self.token = token or os.getenv("GNANI_TOKEN", "")
-        self.endpoint_url = endpoint_url or os.getenv("GNANI_TTS_URL", "https://tts.gnani.ai/v1/synthesize")
-        self.language_code = language_code or os.getenv("GNANI_LANGUAGE_CODE", "en-IN")
-        self.voice_gender = voice_gender or os.getenv("GNANI_VOICE_GENDER", "female")
+        self.endpoint_url = endpoint_url or os.getenv("GNANI_TTS_URL", "https://api.vachana.ai/api/v1/tts/sse")
+        self.voice = voice or os.getenv("GNANI_VOICE_NAME", "Deepak")  # e.g. Deepak, Nalini, Bhavna
+        self.model = model
+        self.sample_rate = sample_rate
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json"
         }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-            headers["token"] = self.token
         if self.api_key:
-            headers["x-api-key"] = self.api_key
+            headers["X-API-Key-ID"] = self.api_key
         return headers
 
     async def synthesize(
         self,
         text: str,
-        language_code: Optional[str] = None,
-        voice_gender: Optional[str] = None,
-        timeout: float = 20.0
+        voice: Optional[str] = None,
+        timeout: float = 30.0
     ) -> Optional[bytes]:
         """
-        Synthesize text into WAV audio bytes using Gnani TTS REST API.
+        Synthesizes text into complete WAV audio bytes by consuming the SSE stream.
         """
         if not text.strip():
             return None
 
-        # Fallback simulation if no keys provided yet
-        if not self.api_key and not self.token:
-            logger.warning("Gnani TTS credentials not configured. Skipping synthesis.")
+        if not self.api_key:
+            logger.warning("Gnani TTS API key not configured. Skipping synthesis.")
             return None
 
+        selected_voice = voice or self.voice
+
         payload = {
-            "text": text,
-            "language": language_code or self.language_code,
-            "voice": voice_gender or self.voice_gender,
-            "audio_format": "wav"
+            "audio_config": {
+                "bitrate": "192k",
+                "container": "wav",
+                "encoding": "linear_pcm",
+                "num_channels": 1,
+                "sample_rate": self.sample_rate,
+                "sample_width": 2
+            },
+            "model": self.model,
+            "text": text.strip(),
+            "voice": selected_voice
         }
+
+        audio_chunks = []
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
+                async with client.stream(
+                    "POST",
                     self.endpoint_url,
                     headers=self._get_headers(),
                     json=payload
-                )
-                response.raise_for_status()
+                ) as response:
+                    if response.status_code != 200:
+                        err_body = await response.aread()
+                        logger.error(f"Gnani TTS HTTP error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
+                        return None
 
-                # Check content type
-                content_type = response.headers.get("content-type", "")
-                if "audio" in content_type or "octet-stream" in content_type:
-                    return response.content
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            raw_json = line[6:].strip()
+                            try:
+                                data = json.loads(raw_json)
+                                b64_chunk = data.get("audio")
+                                if b64_chunk:
+                                    audio_chunks.append(base64.b64decode(b64_chunk))
+                            except Exception:
+                                continue
 
-                # Could be JSON response with base64 audio
-                try:
-                    res_json = response.json()
-                    b64_audio = (
-                        res_json.get("audio_content") or
-                        res_json.get("audio") or
-                        res_json.get("data", {}).get("audio")
-                    )
-                    if b64_audio:
-                        return base64.b64decode(b64_audio)
-                except Exception:
-                    pass
+            if not audio_chunks:
+                logger.warning("No audio chunks received from TTS SSE stream.")
+                return None
 
-                return response.content
+            return b"".join(audio_chunks)
 
         except Exception as e:
             logger.error(f"Gnani TTS synthesis failed: {e}")
             return None
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        timeout: float = 30.0
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Streams raw decoded audio bytes chunk-by-chunk for low latency playback.
+        """
+        if not text.strip() or not self.api_key:
+            return
+
+        payload = {
+            "audio_config": {
+                "bitrate": "192k",
+                "container": "wav",
+                "encoding": "linear_pcm",
+                "num_channels": 1,
+                "sample_rate": self.sample_rate,
+                "sample_width": 2
+            },
+            "model": self.model,
+            "text": text.strip(),
+            "voice": voice or self.voice
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST",
+                    self.endpoint_url,
+                    headers=self._get_headers(),
+                    json=payload
+                ) as response:
+                    if response.status_code == 200:
+                        async for line in response.aiter_lines():
+                            if line.startswith("data: "):
+                                try:
+                                    data = json.loads(line[6:].strip())
+                                    chunk = data.get("audio")
+                                    if chunk:
+                                        yield base64.b64decode(chunk)
+                                except Exception:
+                                    continue
+        except Exception as e:
+            logger.error(f"TTS stream error: {e}")

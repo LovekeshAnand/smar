@@ -1,7 +1,7 @@
 """
 voice/gnani_stt.py
 ==================
-Gnani.ai Speech-to-Text (ASR) REST API client for SMAR.
+Gnani / Vachana Speech-to-Text (ASR) REST API client (v3) for SMAR.
 """
 
 import os
@@ -16,7 +16,7 @@ logger = logging.getLogger("smar.voice.gnani_stt")
 
 class GnaniSTT:
     """
-    Speech-to-Text client for Gnani.ai REST service.
+    Speech-to-Text client for Gnani / Vachana.ai REST API (v3).
     """
     def __init__(
         self,
@@ -25,18 +25,14 @@ class GnaniSTT:
         endpoint_url: Optional[str] = None,
         language_code: Optional[str] = None,
     ):
-        self.api_key = api_key or os.getenv("GNANI_API_KEY", "")
-        self.token = token or os.getenv("GNANI_TOKEN", "")
-        self.endpoint_url = endpoint_url or os.getenv("GNANI_STT_URL", "https://asr.gnani.ai/v1/recognize")
+        self.api_key = api_key or token or os.getenv("GNANI_API_KEY", "")
+        self.endpoint_url = endpoint_url or os.getenv("GNANI_STT_URL", "https://api.vachana.ai/stt/v3")
         self.language_code = language_code or os.getenv("GNANI_LANGUAGE_CODE", "en-IN")
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-            headers["token"] = self.token
         if self.api_key:
-            headers["x-api-key"] = self.api_key
+            headers["X-API-Key-ID"] = self.api_key
         return headers
 
     async def transcribe_audio_bytes(
@@ -44,25 +40,25 @@ class GnaniSTT:
         audio_bytes: bytes,
         sample_rate: int = 16000,
         language_code: Optional[str] = None,
-        timeout: float = 20.0
+        timeout: float = 30.0
     ) -> str:
         """
-        Send audio bytes (WAV format) to Gnani STT REST API and return the transcript string.
+        Send audio bytes (WAV format) to Gnani/Vachana STT REST API and return the transcript string.
         """
         lang = language_code or self.language_code
 
-        # If credentials are not set, return simulated or prompt warning
-        if not self.api_key and not self.token:
-            logger.warning("Gnani STT API Key / Token not configured. Mocking transcription.")
+        if not self.api_key:
+            logger.warning("Gnani STT API Key not configured. Returning fallback mock transcript.")
             return "Hello SMAR, I like python programming and I need help with my tasks."
 
         files = {
-            "audio": ("audio.wav", audio_bytes, "audio/wav")
+            "audio_file": ("audio.wav", audio_bytes, "audio/wav")
         }
         data = {
             "language_code": lang,
-            "sample_rate": str(sample_rate),
-            "encoding": "LINEAR16",
+            "preferred_language": lang,
+            "format": "transcribe",
+            "itn_native_numerals": "true",
         }
 
         try:
@@ -75,7 +71,6 @@ class GnaniSTT:
                 )
                 response.raise_for_status()
                 
-                # Parse response payload
                 res_data = response.json()
                 return self._extract_transcript(res_data)
 
@@ -87,17 +82,19 @@ class GnaniSTT:
             raise
 
     def _extract_transcript(self, res_data: Any) -> str:
-        """Extract transcript string across common Gnani response schemas."""
+        """Extract transcript string across response schemas."""
         if isinstance(res_data, str):
             return res_data.strip()
         
         if isinstance(res_data, dict):
-            # Direct keys
-            for key in ["transcript", "transcription", "text", "asr_output"]:
+            # Direct key 'transcript' in v3 response
+            if "transcript" in res_data and isinstance(res_data["transcript"], str):
+                return res_data["transcript"].strip()
+            
+            for key in ["transcription", "text", "asr_output"]:
                 if key in res_data and isinstance(res_data[key], str):
                     return res_data[key].strip()
             
-            # Nested in 'data' or 'result'
             nested = res_data.get("data") or res_data.get("result")
             if isinstance(nested, dict):
                 return self._extract_transcript(nested)
