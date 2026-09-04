@@ -10,20 +10,20 @@ llama_server_bin: "C:\\Users\\ZBook\\.docker\\bin\\inference\\llama-server.exe"
 # ── Model definitions ─────────────────────────────────────────────────────────
 models:
   fast:
-    path:        "d:/smar/core/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
-    gpu_layers:  28
+    path:        "d:/smar/core/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+    gpu_layers:  20
+    context_len: 2048
+    max_tokens:  256
+    temperature: 0.3
+    description: "Qwen2.5-Coder 7B — intelligent, multilingual conversational reasoning"
+
+  balanced:
+    path:        "d:/smar/core/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+    gpu_layers:  20
     context_len: 2048
     max_tokens:  512
     temperature: 0.2
-    description: "Qwen2.5-Coder 1.5B — fast local reasoning & conversational replies"
-
-  balanced:
-    path:        "D:/Personal Projects/epsilon/v2/BitNet/models/Qwen2.5-Coder-7B/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
-    gpu_layers:  32
-    context_len: 2048
-    max_tokens:  1024
-    temperature: 0.05
-    description: "Qwen2.5-Coder 7B — full files and complex generation"
+    description: "Qwen2.5-Coder 7B — full task and memory generation"
 
   deep:
     path:        "D:/Personal Projects/epsilon/v2/BitNet/models/DeepSeek-Coder-33B/deepseek-coder-33b-instruct.Q4_K_M.gguf"

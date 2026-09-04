@@ -26,10 +26,13 @@ CHATML_ASST   = "<|im_start|>assistant\n"
 STOP_TOKENS   = ["<|im_end|>", "<|endoftext|>", "User:", "\n\nUser"]
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are SMAR, an intelligent voice-first personal assistant with persistent, "
-    "self-updating memory. You provide concise, natural, and helpful spoken answers. "
-    "Use the provided Memory Context to ground your responses accurately. "
-    "Keep answers conversational and direct since they will be read aloud."
+    "You are SMAR, an intelligent, polite, and friendly voice-first personal assistant. "
+    "You speak fluently in Hindi, English, and Hinglish. Always match the language and tone of the user. "
+    "If the user speaks Hindi or asks in Hindi, reply in natural, grammatically correct Hindi. "
+    "If the user speaks English, reply in English. "
+    "Keep answers concise, direct, and conversational (1-3 sentences) so they sound natural when read aloud. "
+    "Ground your responses in the provided persistent memory context. "
+    "Do not repeat words or phrases in a loop, and do not invent fake facts."
 )
 
 
@@ -107,6 +110,10 @@ class EpsilonBridge:
             "prompt": formatted_prompt,
             "n_predict": max_tokens,
             "temperature": temperature,
+            "repeat_penalty": 1.15,
+            "repeat_last_n": 64,
+            "top_k": 40,
+            "top_p": 0.9,
             "stop": STOP_TOKENS,
             "stream": False,
         }
@@ -153,6 +160,10 @@ class EpsilonBridge:
             "prompt": formatted_prompt,
             "n_predict": max_tokens,
             "temperature": temperature,
+            "repeat_penalty": 1.15,
+            "repeat_last_n": 64,
+            "top_k": 40,
+            "top_p": 0.9,
             "stop": STOP_TOKENS,
             "stream": True,
         }
