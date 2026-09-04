@@ -182,22 +182,26 @@ class NativeHybridStore(BaseMemoryStore):
         with self._get_conn() as conn:
             cursor = conn.cursor()
 
-            # Upsert entities safely
+            # Upsert entities safely without violating legacy UNIQUE(name) constraints
             for ent in [sub_clean, obj_clean]:
-                ent_id = f"{user_clean}:{ent.lower()}"
-                cursor.execute("""
-                    SELECT id FROM kg_entities WHERE id = ?
-                """, (ent_id,))
-                if cursor.fetchone():
+                try:
                     cursor.execute("""
-                        UPDATE kg_entities SET updated_at = ?, name = ?, user_id = ?
-                        WHERE id = ?
-                    """, (now, ent, user_clean, ent_id))
-                else:
-                    cursor.execute("""
-                        INSERT INTO kg_entities (id, user_id, name, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (ent_id, user_clean, ent, now, now))
+                        SELECT id FROM kg_entities WHERE LOWER(name) = LOWER(?)
+                    """, (ent,))
+                    existing_ent = cursor.fetchone()
+                    if existing_ent:
+                        cursor.execute("""
+                            UPDATE kg_entities SET updated_at = ?, user_id = ?
+                            WHERE id = ?
+                        """, (now, user_clean, existing_ent["id"]))
+                    else:
+                        ent_id = f"{user_clean}:{ent.lower()}"
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO kg_entities (id, user_id, name, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (ent_id, user_clean, ent, now, now))
+                except Exception as ent_err:
+                    logger.debug(f"Entity upsert bypassed non-critical constraint: {ent_err}")
 
             # Contradiction check: single-valued predicates
             pred_key = pred_clean.lower().replace(" ", "").replace("_", "")
