@@ -39,6 +39,7 @@ from voice.gnani_tts import GnaniTTS
 from memory.context_manager import ContextManager
 from memory.normalizer import DataNormalizer
 from connectors.universal import UniversalConnector
+from context_layer import ContextLayerEngine, ContextConfig
 
 app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
 
@@ -52,6 +53,8 @@ app.add_middleware(
 )
 
 # Initialize singletons
+context_config = ContextConfig()
+context_engine = ContextLayerEngine(context_config)
 context_mgr = ContextManager()
 normalizer = DataNormalizer(context_mgr=context_mgr)
 connectors_bus = UniversalConnector()
@@ -67,6 +70,7 @@ class ChatRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     language: Optional[str] = None
+    user_id: Optional[str] = "default_user"
 
 
 class DispatchRequest(BaseModel):
@@ -99,38 +103,48 @@ async def get_system_status():
 
 
 @app.get("/api/memory/graph")
-async def get_memory_graph():
-    """Returns knowledge graph entities and relational facts."""
-    cursor = context_mgr.kg._get_conn().cursor()
-    cursor.execute("SELECT subject, predicate, object, confidence, updated_at FROM kg_triples ORDER BY updated_at DESC LIMIT 100")
-    rows = cursor.fetchall()
+async def get_memory_graph(user_id: Optional[str] = None):
+    """Returns knowledge graph entities and relational facts scoped to user_id or all."""
+    triples_data = context_engine.store.get_all_triples(user_id=user_id, limit=100)
     
     triples = []
     nodes = set()
-    for r in rows:
+    for r in triples_data:
         triples.append({
             "subject": r["subject"],
             "predicate": r["predicate"],
             "object": r["object"],
-            "confidence": r["confidence"],
-            "updated_at": r["updated_at"]
+            "confidence": r.get("confidence", 1.0),
+            "updated_at": r.get("updated_at", 0)
         })
         nodes.add(r["subject"])
         nodes.add(r["object"])
 
+    graph_bundle = context_engine.get_memory_graph(user_id=user_id, limit=100)
+
     return {
         "nodes_count": len(nodes),
         "triples_count": len(triples),
-        "triples": triples
+        "triples": triples,
+        "nodes": graph_bundle.get("nodes", []),
+        "edges": graph_bundle.get("edges", [])
     }
 
 
 @app.get("/api/memory/vectors")
-async def get_memory_vectors():
+async def get_memory_vectors(user_id: Optional[str] = None):
     """Returns recent semantic memory chunks stored in vector database."""
-    cursor = context_mgr.vectors._get_conn().cursor()
-    cursor.execute("SELECT id, content, category, updated_at FROM semantic_memories ORDER BY updated_at DESC LIMIT 50")
-    rows = cursor.fetchall()
+    target_user = user_id or "default_user"
+    with context_engine.store._get_conn() as conn:
+        cursor = conn.cursor()
+        if user_id:
+            cursor.execute(
+                "SELECT id, content, category, updated_at FROM semantic_memories WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
+                (target_user,)
+            )
+        else:
+            cursor.execute("SELECT id, content, category, updated_at FROM semantic_memories ORDER BY updated_at DESC LIMIT 50")
+        rows = cursor.fetchall()
     
     items = []
     for r in rows:
@@ -141,6 +155,29 @@ async def get_memory_vectors():
             "updated_at": r["updated_at"]
         })
     return {"count": len(items), "items": items}
+
+
+@app.get("/api/context/profile")
+async def get_user_profile(user_id: Optional[str] = None):
+    """Returns synthesized structured user profile."""
+    uid = user_id or "default_user"
+    return context_engine.get_user_profile(uid)
+
+
+class ExplicitMemoryRequest(BaseModel):
+    text: str
+    user_id: Optional[str] = "default_user"
+    category: Optional[str] = "explicit"
+
+
+@app.post("/api/context/memory")
+async def add_explicit_memory(req: ExplicitMemoryRequest):
+    """Explicitly stores a user note/preference and extracts relational facts."""
+    return context_engine.add_explicit_memory(
+        user_id=req.user_id or "default_user",
+        text=req.text,
+        category=req.category or "explicit"
+    )
 
 
 @app.post("/api/connectors/sync")
@@ -180,29 +217,47 @@ async def dispatch_action(req: DispatchRequest):
 
 @app.post("/api/chat")
 async def process_chat(req: ChatRequest):
-    """Processes user text: injects context, queries Epsilon, extracts facts, synthesizes audio."""
+    """
+    Processes user text:
+    Extracts facts, executes hybrid RAG retrieval, composes dynamic system prompt,
+    queries Epsilon LLM, and synthesizes audio.
+    """
     user_text = req.text.strip()
     if not user_text:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
-    # 1. Retrieve hybrid context
-    context = context_mgr.retrieve_context(user_text)
+    user_id = req.user_id or "default_user"
 
-    # 2. Query Epsilon LLM
+    # 1. Ingest turn, run hybrid retrieval, compose dynamic prompt
+    turn_result = context_engine.process_user_turn(
+        user_id=user_id,
+        user_text=user_text,
+        language_hint=req.language or "en-IN"
+    )
+    system_prompt = turn_result["system_prompt"]
+    retrieval = turn_result["retrieval"]
+    structured_facts = retrieval.get("structured_facts", [])
+    context_summary = " | ".join(structured_facts) if structured_facts else None
+
+    # Sync to legacy context manager for connector normalizer compatibility
+    try:
+        context_mgr.ingest_turn(user_text, "")
+    except Exception:
+        pass
+
+    # 2. Query Epsilon LLM with dynamic identity and recalled context
     try:
         reply_text = await epsilon_bridge.generate_reply(
             user_prompt=user_text,
-            context=context,
+            context=context_summary,
+            system_prompt=system_prompt,
             max_tokens=256
         )
     except Exception as e:
         logger.error(f"Epsilon generation error: {e}")
         reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
 
-    # 3. Ingest turn into memory (Facts & Vector)
-    mem_update = context_mgr.ingest_turn(user_text, reply_text)
-
-    # 4. Synthesize voice with Gnani TTS
+    # 3. Synthesize voice with Gnani TTS
     audio_b64 = None
     try:
         audio_bytes = await tts_client.synthesize(reply_text, voice=req.voice or tts_client.voice)
@@ -211,11 +266,10 @@ async def process_chat(req: ChatRequest):
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}")
 
-    # 5. Check autonomous work intents (e.g. if user asks to email, message, calendar)
+    # 4. Check autonomous work intents (e.g. if user asks to email, message, calendar)
     lower_text = user_text.lower()
     intent_dispatched = None
     if "email" in lower_text and "@" in user_text:
-        # Extract email target
         import re
         m = re.search(r"[\w\.-]+@[\w\.-]+", user_text)
         if m:
@@ -225,7 +279,6 @@ async def process_chat(req: ChatRequest):
                 "raw_input": user_text
             })
     elif "whatsapp" in lower_text or "message" in lower_text:
-        # Check phone
         import re
         m = re.search(r"\+?\d{10,12}", user_text)
         if m:
@@ -237,8 +290,9 @@ async def process_chat(req: ChatRequest):
 
     return {
         "reply": reply_text,
-        "context_used": context,
-        "memory_updated": mem_update,
+        "context_used": context_summary or "None",
+        "retrieval": retrieval,
+        "extracted_facts": turn_result.get("extracted_facts", []),
         "audio_base64": audio_b64,
         "work_intent": intent_dispatched
     }
@@ -247,11 +301,12 @@ async def process_chat(req: ChatRequest):
 @app.post("/api/voice/process")
 async def process_voice(
     audio_file: UploadFile = File(...),
-    language: Optional[str] = Form(None)
+    language: Optional[str] = Form(None),
+    user_id: Optional[str] = Form("default_user")
 ):
     """
     Complete end-to-end voice pipeline:
-    Audio In (WAV) -> Gnani STT -> Context Retrieval -> Epsilon LLM -> Gnani TTS Audio Out
+    Audio In (WAV) -> Gnani STT -> Context Layer Engine -> Epsilon LLM -> Gnani TTS Audio Out
     """
     audio_bytes = await audio_file.read()
     if not audio_bytes:
@@ -267,14 +322,19 @@ async def process_voice(
     if not transcription or not transcription.strip():
         transcription = "(unrecognized speech)"
 
-    # 2. Run chat processing with the transcribed text
-    chat_resp = await process_chat(ChatRequest(text=transcription, language=lang))
+    # 2. Run chat processing with the transcribed text and user_id
+    chat_resp = await process_chat(ChatRequest(
+        text=transcription,
+        language=lang,
+        user_id=user_id or "default_user"
+    ))
 
     return {
         "transcription": transcription,
         "reply": chat_resp["reply"],
         "context_used": chat_resp["context_used"],
-        "memory_updated": chat_resp["memory_updated"],
+        "retrieval": chat_resp.get("retrieval"),
+        "extracted_facts": chat_resp.get("extracted_facts"),
         "audio_base64": chat_resp["audio_base64"],
         "work_intent": chat_resp.get("work_intent")
     }

@@ -3,65 +3,59 @@
 import React from "react";
 
 interface HeaderProps {
-  triplesCount: number;
-  onSyncAll: () => void;
-  isSyncing: boolean;
+  onToggleMemory: () => void;
+  isMemoryOpen: boolean;
+  isConnected: boolean;
+  language: string;
+  onToggleLanguage: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ triplesCount, onSyncAll, isSyncing }) => {
+export const Header: React.FC<HeaderProps> = ({
+  onToggleMemory,
+  isMemoryOpen,
+  isConnected,
+  language,
+  onToggleLanguage,
+}) => {
   return (
-    <header className="h-16 px-6 flex items-center justify-between border-b border-white/10 bg-slate-950/80 backdrop-blur-xl z-20">
-      {/* Left: Brand */}
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500/20 to-purple-500/20 border border-cyan-500/40 flex items-center justify-center shadow-[0_0_20px_rgba(0,240,255,0.25)]">
-          <span className="w-3.5 h-3.5 rounded-full bg-cyan-400 shadow-[0_0_10px_#00f0ff]" />
-        </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-base font-extrabold tracking-wider text-white">SMAR</h1>
-            <span className="font-mono text-[10px] bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 px-1.5 py-0.5 rounded">
-              v2.0
-            </span>
-          </div>
-          <p className="text-[10px] tracking-widest text-slate-400 font-semibold uppercase">
-            Autonomous Voice & Memory Intelligence
-          </p>
-        </div>
+    <header className="h-14 px-6 flex items-center justify-between border-b border-white/5 bg-transparent backdrop-blur-sm z-30">
+      {/* Minimal Brand */}
+      <div className="flex items-center gap-2.5">
+        <span
+          className={`w-2 h-2 rounded-full ${
+            isConnected ? "bg-cyan-400 shadow-[0_0_8px_#00f0ff]" : "bg-slate-600"
+          }`}
+        />
+        <span className="font-sans font-semibold tracking-wider text-sm text-slate-200 lowercase">
+          smar
+        </span>
       </div>
 
-      {/* Center: Telemetry Pills */}
-      <div className="hidden md:flex items-center gap-3">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 border border-white/10 font-mono text-xs text-slate-300">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981]" />
-          <span>EPSILON 7B</span>
-        </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 border border-white/10 font-mono text-xs text-slate-300">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981]" />
-          <span>NALINI (HI/EN)</span>
-        </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 border border-white/10 font-mono text-xs text-slate-300">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981]" />
-          <span>KG: {triplesCount} FACTS</span>
-        </div>
-      </div>
-
-      {/* Right: Actions */}
-      <div className="flex items-center gap-3">
+      {/* Right Actions: Minimal language toggle & memory drawer toggle */}
+      <div className="flex items-center gap-2">
         <button
-          onClick={onSyncAll}
-          disabled={isSyncing}
-          className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-white/5 hover:bg-cyan-500/15 border border-white/10 hover:border-cyan-500/40 text-slate-200 hover:text-cyan-300 text-xs font-semibold transition-all disabled:opacity-50"
+          onClick={onToggleLanguage}
+          className="px-2.5 py-0.5 rounded-full text-[11px] font-mono text-cyan-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+          title={`Language: ${language === "en-IN" ? "English" : "Hindi"}. Click to toggle.`}
         >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
-          </svg>
-          <span>{isSyncing ? "Syncing..." : "Sync Context"}</span>
+          {language === "en-IN" ? "EN" : "HI"}
         </button>
 
-        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 font-mono text-xs font-bold text-emerald-400">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_#10b981]" />
-          <span>ONLINE</span>
-        </div>
+        <button
+          onClick={onToggleMemory}
+          className={`px-3 py-1 rounded-full text-xs font-mono transition-all flex items-center gap-1.5 ${
+            isMemoryOpen
+              ? "bg-white/15 text-white border border-white/20"
+              : "bg-white/5 hover:bg-white/10 text-slate-400 hover:text-slate-200 border border-transparent"
+          }`}
+          aria-label="Toggle Memory Drawer"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <span>memory</span>
+        </button>
       </div>
     </header>
   );

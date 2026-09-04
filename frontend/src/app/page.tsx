@@ -2,7 +2,10 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Header } from "@/components/Header";
-import { HolographicOrb, OrbState } from "@/components/HolographicOrb";
+import {
+  AudioSpikesVisualizer,
+  VisualizerState,
+} from "@/components/AudioSpikesVisualizer";
 import { ConversationStream, ChatMessage } from "@/components/ConversationStream";
 import {
   MemoryInspector,
@@ -14,22 +17,25 @@ import { VoiceController } from "@/components/VoiceController";
 import { encodeWAV } from "@/lib/audio";
 
 export default function Home() {
-  // Application State
+  // State
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "init-msg",
       role: "assistant",
-      text: "नमस्ते! I am SMAR, your memory-driven autonomous voice assistant. My Knowledge Graph is grounded in your communications and daily context. You can speak to me in English or Hindi, or type below.",
+      text: "Hello! How can I help you today?",
       timestamp: "Just now",
     },
   ]);
-  const [orbState, setOrbState] = useState<OrbState>("IDLE");
+  const [visualizerState, setVisualizerState] = useState<VisualizerState>("IDLE");
   const [audioData, setAudioData] = useState<Uint8Array>(new Uint8Array(64));
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [triples, setTriples] = useState<KGTriple[]>([]);
   const [vectors, setVectors] = useState<VectorMemory[]>([]);
   const [connectors, setConnectors] = useState<Record<string, ConnectorInfo>>({});
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [isMemoryOpen, setIsMemoryOpen] = useState<boolean>(false);
+  const [isConnected, setIsConnected] = useState<boolean>(true);
+  const [language, setLanguage] = useState<string>("en-IN");
 
   // Audio References
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -40,13 +46,11 @@ export default function Home() {
   const ttsAnalyserRef = useRef<AnalyserNode | null>(null);
   const isHookedRef = useRef<boolean>(false);
 
-  // Initial data fetch
   useEffect(() => {
     fetchSystemStatus();
     fetchMemoryGraph();
     fetchMemoryVectors();
 
-    // Global spacebar listener for mic toggle
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && (e.target as HTMLElement).tagName !== "INPUT") {
         e.preventDefault();
@@ -57,19 +61,21 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // System status query
   const fetchSystemStatus = async () => {
     try {
       const res = await fetch("/api/status");
-      if (!res.ok) return;
+      if (!res.ok) {
+        setIsConnected(false);
+        return;
+      }
       const data = await res.json();
       setConnectors(data.connectors || {});
-    } catch (e) {
-      console.error("Failed to fetch system status:", e);
+      setIsConnected(true);
+    } catch {
+      setIsConnected(false);
     }
   };
 
-  // KG query
   const fetchMemoryGraph = async () => {
     try {
       const res = await fetch("/api/memory/graph");
@@ -77,11 +83,10 @@ export default function Home() {
       const data = await res.json();
       setTriples(data.triples || []);
     } catch (e) {
-      console.error("Failed to fetch memory graph:", e);
+      console.error(e);
     }
   };
 
-  // Vector query
   const fetchMemoryVectors = async () => {
     try {
       const res = await fetch("/api/memory/vectors");
@@ -89,30 +94,24 @@ export default function Home() {
       const data = await res.json();
       setVectors(data.items || []);
     } catch (e) {
-      console.error("Failed to fetch memory vectors:", e);
+      console.error(e);
     }
   };
 
-  // Sync connectors feed
   const handleSyncAll = async () => {
     setIsSyncing(true);
     try {
-      const res = await fetch("/api/connectors/sync", { method: "POST" });
-      const data = await res.json();
-      alert(
-        `Synced! Processed ${data.raw_items_fetched} items. Triples added: ${data.sync_stats?.ingested_triples || 0}, Vectors: ${data.sync_stats?.ingested_vectors || 0}`
-      );
+      await fetch("/api/connectors/sync", { method: "POST" });
       fetchMemoryGraph();
       fetchMemoryVectors();
       fetchSystemStatus();
     } catch (e: any) {
-      alert("Sync error: " + e.message);
+      console.error(e);
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // Microphone toggle & audio recording
   const toggleMicrophone = async () => {
     if (isRecording) {
       stopRecording();
@@ -155,9 +154,8 @@ export default function Home() {
       audioProcessorRef.current = processor;
 
       setIsRecording(true);
-      setOrbState("LISTENING");
+      setVisualizerState("LISTENING");
 
-      // Loop to feed frequency spectrum to the visualizer
       const dataArr = new Uint8Array(64);
       const updateMic = () => {
         if (analyser && micStreamRef.current) {
@@ -168,15 +166,14 @@ export default function Home() {
       };
       requestAnimationFrame(updateMic);
     } catch (e: any) {
-      console.error("Microphone error:", e);
-      alert("Could not access microphone: " + e.message);
+      console.error("Mic error:", e);
     }
   };
 
   const stopRecording = () => {
     setIsRecording(false);
     if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
       micStreamRef.current = null;
     }
     if (audioProcessorRef.current) {
@@ -184,100 +181,77 @@ export default function Home() {
       audioProcessorRef.current = null;
     }
 
-    setOrbState("THINKING");
+    setVisualizerState("THINKING");
 
-    // Encode audio chunks into 16kHz mono WAV
     const wavBlob = encodeWAV(audioChunksRef.current, 16000);
     sendVoiceToBackend(wavBlob);
   };
 
-  // Submit voice to backend
   const sendVoiceToBackend = async (wavBlob: Blob) => {
     const formData = new FormData();
     formData.append("audio_file", wavBlob, "voice_input.wav");
-    formData.append("language", "hi-IN");
+    formData.append("language", language);
 
     try {
-      const res = await fetch("/api/voice/process", {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) throw new Error("Voice pipeline returned: " + res.statusText);
+      const res = await fetch("/api/voice/process", { method: "POST", body: formData });
+      if (!res.ok) throw new Error("Voice pipeline failed");
       const data = await res.json();
 
-      // Add user message
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
         text: data.transcription,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        timestamp: "Now",
       };
 
-      // Add assistant reply
       const asstMsg: ChatMessage = {
         id: `asst-${Date.now()}`,
         role: "assistant",
         text: data.reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        timestamp: "Now",
         audioBase64: data.audio_base64,
-        contextUsed: data.context_used,
-        workIntent: data.work_intent,
       };
 
       setMessages((prev) => [...prev, userMsg, asstMsg]);
 
-      // Play audio response
       if (data.audio_base64) {
         playAudioBase64(data.audio_base64);
       } else {
-        setOrbState("IDLE");
+        setVisualizerState("IDLE");
       }
 
       fetchMemoryGraph();
       fetchMemoryVectors();
-    } catch (e: any) {
-      console.error("Voice processing error:", e);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          role: "assistant",
-          text: "I had trouble processing the audio: " + e.message,
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        },
-      ]);
-      setOrbState("IDLE");
+    } catch {
+      setVisualizerState("IDLE");
     }
   };
 
-  // Submit text to backend
   const handleTextSubmit = async (text: string) => {
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
       text,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      timestamp: "Now",
     };
     setMessages((prev) => [...prev, userMsg]);
-    setOrbState("THINKING");
+    setVisualizerState("THINKING");
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, language }),
       });
-      if (!res.ok) throw new Error("Chat failed: " + res.statusText);
+      if (!res.ok) throw new Error("Chat failed");
       const data = await res.json();
 
       const asstMsg: ChatMessage = {
         id: `asst-${Date.now()}`,
         role: "assistant",
         text: data.reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        timestamp: "Now",
         audioBase64: data.audio_base64,
-        contextUsed: data.context_used,
-        workIntent: data.work_intent,
       };
 
       setMessages((prev) => [...prev, asstMsg]);
@@ -285,27 +259,16 @@ export default function Home() {
       if (data.audio_base64) {
         playAudioBase64(data.audio_base64);
       } else {
-        setOrbState("IDLE");
+        setVisualizerState("IDLE");
       }
 
       fetchMemoryGraph();
       fetchMemoryVectors();
-    } catch (e: any) {
-      console.error("Chat error:", e);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          role: "assistant",
-          text: "Error: " + e.message,
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        },
-      ]);
-      setOrbState("IDLE");
+    } catch {
+      setVisualizerState("IDLE");
     }
   };
 
-  // Play synthesized audio and hook Web Audio analyser for reactive orb animation
   const playAudioBase64 = (b64: string) => {
     const player = audioPlayerRef.current;
     if (!player) return;
@@ -323,7 +286,7 @@ export default function Home() {
         ttsAnalyserRef.current = analyser;
         isHookedRef.current = true;
       } catch (err) {
-        console.warn("Could not attach TTS analyser:", err);
+        console.warn("Could not hook analyser:", err);
       }
     }
 
@@ -331,8 +294,7 @@ export default function Home() {
     player
       .play()
       .then(() => {
-        setOrbState("SPEAKING");
-        // Loop to feed frequency spectrum to orb while speaking
+        setVisualizerState("SPEAKING");
         const dataArr = new Uint8Array(64);
         const updateSpeech = () => {
           if (player && !player.paused && !player.ended) {
@@ -345,64 +307,67 @@ export default function Home() {
         };
         requestAnimationFrame(updateSpeech);
       })
-      .catch((e) => {
-        console.warn("Audio playback blocked:", e);
-        setOrbState("IDLE");
+      .catch(() => {
+        setVisualizerState("IDLE");
       });
-  };
-
-  const onAudioEnded = () => {
-    setOrbState("IDLE");
-    setAudioData(new Uint8Array(64));
   };
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#07090e] text-slate-100 overflow-hidden select-none relative font-sans">
-      {/* Background ambient lighting */}
-      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_30%,rgba(14,165,233,0.08)_0%,transparent_60%),radial-gradient(circle_at_80%_80%,rgba(168,85,247,0.06)_0%,transparent_50%),radial-gradient(circle_at_20%_80%,rgba(16,185,129,0.05)_0%,transparent_50%)]" />
+      {/* Ambient background bloom */}
+      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_35%,rgba(0,240,255,0.04)_0%,transparent_60%)]" />
 
-      {/* Header */}
-      <Header triplesCount={triples.length} onSyncAll={handleSyncAll} isSyncing={isSyncing} />
+      {/* Minimalist Top Bar */}
+      <Header
+        onToggleMemory={() => setIsMemoryOpen((prev) => !prev)}
+        isMemoryOpen={isMemoryOpen}
+        isConnected={isConnected}
+        language={language}
+        onToggleLanguage={() => setLanguage((prev) => (prev === "en-IN" ? "hi-IN" : "en-IN"))}
+      />
 
-      {/* Main 3-Column Dashboard */}
-      <main className="flex-1 grid grid-cols-1 md:grid-cols-[340px_1fr_380px] gap-4 p-4 overflow-hidden relative z-10">
-        {/* Left: Conversation Stream */}
-        <section className="h-full overflow-hidden">
+      {/* Centered Minimalist Stage */}
+      <main className="flex-1 flex flex-col items-center justify-between py-2 px-4 relative z-10 overflow-hidden">
+        {/* Center: Audio Music Spikes & Minimalist Dialogue */}
+        <div className="flex flex-col items-center justify-center gap-2 my-auto w-full max-w-lg">
+          <AudioSpikesVisualizer state={visualizerState} audioData={audioData} />
           <ConversationStream messages={messages} onPlayAudio={playAudioBase64} />
-        </section>
+        </div>
 
-        {/* Center: Holographic Visualizer & Voice Controller */}
-        <section className="flex flex-col items-center justify-between py-4 px-2 h-full overflow-hidden">
-          <div className="my-auto flex flex-col items-center">
-            <HolographicOrb state={orbState} audioData={audioData} />
-          </div>
-
-          <div className="w-full max-w-md mt-4">
-            <VoiceController
-              isRecording={isRecording}
-              onToggleRecord={toggleMicrophone}
-              onSubmitText={handleTextSubmit}
-            />
-          </div>
-        </section>
-
-        {/* Right: Memory Inspector & Connectors Hub */}
-        <section className="h-full overflow-hidden">
-          <MemoryInspector
-            triples={triples}
-            vectors={vectors}
-            connectors={connectors}
-            onRefreshGraph={fetchMemoryGraph}
-            onRefreshVectors={fetchMemoryVectors}
-            onRefreshConnectors={fetchSystemStatus}
-            onSyncAll={handleSyncAll}
-            isSyncing={isSyncing}
+        {/* Bottom: Voice & Input Controls */}
+        <div className="w-full max-w-sm shrink-0 pb-3">
+          <VoiceController
+            isRecording={isRecording}
+            onToggleRecord={toggleMicrophone}
+            onSubmitText={handleTextSubmit}
           />
-        </section>
+        </div>
       </main>
 
-      {/* Hidden audio element for TTS playback */}
-      <audio ref={audioPlayerRef} onEnded={onAudioEnded} className="hidden" />
+
+      {/* Slide-over Memory Drawer */}
+      <MemoryInspector
+        isOpen={isMemoryOpen}
+        onClose={() => setIsMemoryOpen(false)}
+        triples={triples}
+        vectors={vectors}
+        connectors={connectors}
+        onRefreshGraph={fetchMemoryGraph}
+        onRefreshVectors={fetchMemoryVectors}
+        onRefreshConnectors={fetchSystemStatus}
+        onSyncAll={handleSyncAll}
+        isSyncing={isSyncing}
+      />
+
+      {/* Hidden audio element for speech playback */}
+      <audio
+        ref={audioPlayerRef}
+        onEnded={() => {
+          setVisualizerState("IDLE");
+          setAudioData(new Uint8Array(64));
+        }}
+        className="hidden"
+      />
     </div>
   );
 }
