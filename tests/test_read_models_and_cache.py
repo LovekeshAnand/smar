@@ -145,6 +145,86 @@ class TestReadModelsAndCache(unittest.TestCase):
         b_item2 = self.service.get_item_by_barcode(barcode)
         self.assertEqual(b_item2["item_id"], "INV-000020")
 
+    def test_static_vs_volatile_caching(self):
+        """Verify separation of static item metadata vs live volatile stock/pricing."""
+        test_item_id = "INV-000030"
+        
+        # 1. Fetch static fields (cached long-term)
+        static_data = self.service.get_item_static(test_item_id)
+        self.assertIsNotNone(static_data)
+        self.assertIn("canonical_name", static_data)
+        self.assertIn("category", static_data)
+        self.assertNotIn("quantity", static_data)
+        self.assertNotIn("unit_price", static_data)
+
+        # 2. Fetch volatile fields
+        volatile_data = self.service.get_item_volatile(test_item_id)
+        self.assertIsNotNone(volatile_data)
+        self.assertIn("quantity", volatile_data)
+        self.assertIn("unit_price", volatile_data)
+        self.assertNotIn("canonical_name", volatile_data)
+
+        # 3. Fetch with force_live_stock (merges static cache with live DB)
+        merged = self.service.get_current_inventory_info(test_item_id)
+        self.assertIsNotNone(merged)
+        self.assertEqual(merged["canonical_name"], static_data["canonical_name"])
+        self.assertEqual(merged["quantity"], volatile_data["quantity"])
+
+    def test_lru_capacity_eviction(self):
+        """Verify LRU eviction when capacity limit is reached."""
+        small_cache = HotDataCacheManager(max_capacity=3, enabled=True)
+        small_cache.set("k1", "v1", ttl_seconds=60)
+        small_cache.set("k2", "v2", ttl_seconds=60)
+        small_cache.set("k3", "v3", ttl_seconds=60)
+
+        # Touch k1 so k2 becomes the oldest
+        _ = small_cache.get("k1")
+
+        # Insert k4 -> should evict k2
+        small_cache.set("k4", "v4", ttl_seconds=60)
+
+        self.assertIsNone(small_cache.get("k2"))
+        self.assertEqual(small_cache.get("k1"), "v1")
+        self.assertEqual(small_cache.get("k3"), "v3")
+        self.assertEqual(small_cache.get("k4"), "v4")
+        self.assertEqual(small_cache.evictions, 1)
+
+    def test_concurrent_access(self):
+        """Verify thread-safety under multi-threaded concurrent access."""
+        import concurrent.futures
+
+        def worker(thread_idx: int):
+            for i in range(20):
+                item_id = f"INV-00000{i % 10 + 1}"
+                _ = self.service.get_item(item_id)
+                self.service.cache_populate(f"test:thread:{thread_idx}:{i}", i, ttl_seconds=10)
+                _ = self.service.cache_lookup(f"test:thread:{thread_idx}:{i}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(worker, idx) for idx in range(8)]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()  # Will raise if any thread encountered an unhandled exception
+
+        self.assertGreater(self.cache.hits, 0)
+        self.assertGreater(self.cache.misses, 0)
+
+    def test_smart_data_layer_interfaces(self):
+        """Verify explicit service APIs provided for downstream Smart Data Layer integration."""
+        # 1. Direct cache lookup & populate
+        self.service.cache_populate("custom:key", {"status": "ok"}, ttl_seconds=30)
+        val = self.service.cache_lookup("custom:key")
+        self.assertEqual(val, {"status": "ok"})
+
+        # 2. Get all category summaries
+        summaries = self.service.get_all_category_summaries()
+        self.assertIsInstance(summaries, list)
+        self.assertGreater(len(summaries), 0)
+
+        # 3. Direct invalidation
+        self.service.invalidate_item("INV-000001")
+        self.assertIsNone(self.cache.get(self.cache.get_key_full_item("INV-000001")))
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -19,7 +19,10 @@ import sqlite3
 import logging
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple, Generator
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 from structured_data.cache import hot_cache
 
