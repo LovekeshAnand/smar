@@ -38,6 +38,8 @@ from voice.gnani_stt import GnaniSTT
 from voice.gnani_tts import GnaniTTS
 from memory.context_manager import ContextManager
 from context_layer import ContextLayerEngine, ContextConfig
+from structured_data.adapters import AdapterRegistry, SQLiteStorageAdapter
+from smart_data import SmartDataLayerEngine
 
 app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
 
@@ -57,6 +59,15 @@ context_mgr = ContextManager()
 stt_client = GnaniSTT(language_code=os.getenv("GNANI_LANGUAGE_CODE", "hi-IN"))
 tts_client = GnaniTTS(voice=os.getenv("GNANI_VOICE_NAME", "Nalini"))
 epsilon_bridge = EpsilonBridge()
+
+# Initialize Smart Data Layer & Multi-Source Storage Adapters
+adapter_registry = AdapterRegistry()
+primary_adapter = SQLiteStorageAdapter()  # smar_inventory.db with 100,000+ items
+adapter_registry.register("primary_sqlite", primary_adapter, set_as_primary=True)
+smart_data_engine = SmartDataLayerEngine(
+    adapter_registry=adapter_registry,
+    context_store=context_engine.store
+)
 
 # Active WebSocket clients
 connected_clients: List[WebSocket] = []
@@ -93,6 +104,14 @@ async def get_system_status():
             "status": "active",
             "has_graph": len(triples_summary) >= 0,
             "has_vectors": len(vectors_summary) >= 0
+        },
+        "smart_data_layer": {
+            "status": "active",
+            "source_name": adapter_registry.get_primary().get_source_name(),
+            "source_type": adapter_registry.get_primary().get_source_type(),
+            "total_records": adapter_registry.get_primary().get_total_count(),
+            "kg_cache_hits": smart_data_engine.cache_hits,
+            "kg_cache_misses": smart_data_engine.cache_misses
         }
     }
 
@@ -170,7 +189,11 @@ async def process_chat(req: ChatRequest):
 
     user_id = req.user_id or "default_user"
 
-    # 1. Ingest turn, run hybrid retrieval, compose dynamic prompt
+    # 1. Query Smart Data Layer asynchronously (non-blocking over 1M+ rows & KG cache)
+    smart_res = await smart_data_engine.process_query_async(user_text, user_id=user_id)
+    inventory_context = smart_res.get("context_string")
+
+    # 2. Ingest turn, run hybrid retrieval, compose dynamic prompt
     turn_result = context_engine.process_user_turn(
         user_id=user_id,
         user_text=user_text,
@@ -182,10 +205,12 @@ async def process_chat(req: ChatRequest):
     semantic_memories = retrieval.get("semantic_memories", [])
     recent_turns = turn_result.get("recent_turns", [])
 
-    # Assemble rich context from structured graph facts and semantic memory recall
+    # Assemble rich context: database grounded inventory facts + personal user memory
     context_blocks = []
+    if inventory_context:
+        context_blocks.append(inventory_context)
     if structured_facts:
-        context_blocks.append("[Verified Facts]:\n" + "\n".join(f"- {f}" for f in structured_facts))
+        context_blocks.append("[Personal User Knowledge]:\n" + "\n".join(f"- {f}" for f in structured_facts))
     if semantic_memories:
         context_blocks.append("[Recalled Past Notes & Context]:\n" + "\n".join(f"- {m}" for m in semantic_memories))
     context_summary = "\n\n".join(context_blocks) if context_blocks else None
@@ -264,7 +289,14 @@ async def process_chat(req: ChatRequest):
         "context_used": context_summary or "None",
         "retrieval": retrieval,
         "extracted_facts": turn_result.get("extracted_facts", []),
-        "audio_base64": audio_b64
+        "audio_base64": audio_b64,
+        "smart_data": {
+            "intent": smart_res.get("intent"),
+            "kg_cache_hit": smart_res.get("kg_cache_hit"),
+            "matched_item": smart_res.get("matched_item"),
+            "spoken_confirmation": smart_res.get("spoken_confirmation"),
+            "elapsed_ms": smart_res.get("elapsed_ms")
+        }
     }
 
 
@@ -323,8 +355,113 @@ async def process_voice(
         "context_used": chat_resp["context_used"],
         "retrieval": chat_resp.get("retrieval"),
         "extracted_facts": chat_resp.get("extracted_facts"),
-        "audio_base64": chat_resp["audio_base64"]
+        "audio_base64": chat_resp["audio_base64"],
+        "smart_data": chat_resp.get("smart_data")
     }
+
+
+# --- Universal Data Layer & Sync Endpoints ---
+@app.get("/api/data/status")
+@app.get("/api/inventory/status")
+async def get_universal_data_status():
+    """Returns readiness status, table inventory, row counts, and cache engine."""
+    sync_status = smart_data_engine.get_sync_status()
+    primary = adapter_registry.get_primary()
+    return {
+        "status": sync_status.get("status", "ready_to_answer"),
+        "ready_to_answer": sync_status.get("ready_to_answer", True),
+        "message": sync_status.get("message"),
+        "total_records": sync_status.get("total_rows", 0) or (primary.get_total_count() if primary else 0),
+        "tables_count": sync_status.get("tables_count", 0),
+        "tables": sync_status.get("tables", []),
+        "schema_triples_in_kg": sync_status.get("schema_triples_in_kg", 0),
+        "cache_engine": sync_status.get("cache_engine", "in_memory_lru"),
+        "is_redis": sync_status.get("is_redis", False),
+        "cache_hits": smart_data_engine.cache_hits,
+        "cache_misses": smart_data_engine.cache_misses,
+        "primary_source": primary.get_source_name() if primary else "warehouse.db"
+    }
+
+
+@app.post("/api/data/upload")
+async def upload_multiple_data_files(files: List[UploadFile] = File(...)):
+    """
+    Accepts arbitrary, unexpected uploaded files (CSV, Excel, SQLite),
+    saves them, and runs the Universal Data Sync Engine to index and sync to KG.
+    """
+    import shutil
+    uploads_dir = Path("data/uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    saved_paths = []
+
+    for f in files:
+        target_path = uploads_dir / f.filename
+        with open(target_path, "wb") as buffer:
+            shutil.copyfileobj(f.file, buffer)
+        saved_paths.append(str(target_path))
+
+    # Run non-blocking sync pipeline
+    result = await smart_data_engine.sync_files_async(saved_paths)
+    return result
+
+
+@app.post("/api/data/sync")
+async def trigger_data_sync():
+    """
+    Manually triggers the Universal Data Sync Engine over all files in data/uploads/ and data/.
+    Introspects schema, indexes, writes triples to KG, and sets ready_to_answer = True.
+    """
+    target_files = []
+    # Collect files from data/uploads and sample files from data/
+    for folder in ["data/uploads", "data"]:
+        p = Path(folder)
+        if p.exists():
+            for f in p.iterdir():
+                if f.is_file() and f.suffix.lower() in [".csv", ".xlsx", ".xls"] and not f.name.startswith("test_"):
+                    target_files.append(str(f))
+
+    if not target_files:
+        # Check warehouse.db
+        wh = Path("data/warehouse.db")
+        if wh.exists():
+            target_files.append(str(wh))
+
+    result = await smart_data_engine.sync_files_async(target_files)
+    return result
+
+
+@app.get("/api/inventory/search")
+async def search_inventory(q: str, limit: int = 10):
+    """Direct search query against active storage engine."""
+    res = await smart_data_engine.process_query_async(q)
+    return {
+        "query": q,
+        "count": len(res.get("all_results", [])),
+        "items": res.get("all_results", []),
+        "spoken_confirmation": res.get("spoken_confirmation"),
+        "elapsed_ms": res.get("elapsed_ms")
+    }
+
+
+@app.post("/api/inventory/load-file")
+async def load_inventory_file(file: UploadFile = File(...)):
+    """Uploads a CSV or Excel file and indexes it into the system."""
+    import shutil
+    uploads_dir = Path("data/uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    file_path = uploads_dir / file.filename
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Ingest and sync
+    res = await smart_data_engine.sync_files_async([str(file_path)])
+    return {
+        "success": True,
+        "message": f"Successfully ingested and indexed '{file.filename}'. Ready to answer!",
+        "sync_status": res
+    }
+
 
 
 @app.websocket("/ws/live")

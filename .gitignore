@@ -39,8 +39,9 @@ core/models/
 *.sqlite
 *.sqlite3
 data/*.db
+data/*.csv
+data/*.xlsx
 data/uploads/
-connectors/whatsapp/OpenWA/
 
 # Audio scratch files
 *.wav
