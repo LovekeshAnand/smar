@@ -186,13 +186,35 @@ class SQLiteStorageAdapter(BaseStorageAdapter):
             conn.close()
 
     def get_total_count(self, table_name: Optional[str] = None) -> int:
-        target_table = table_name or "inventory_items"
         conn = self.db_manager.get_connection()
         try:
-            row = conn.execute(f"SELECT COUNT(*) FROM {target_table};").fetchone()
-            return row[0] if row else 0
+            if table_name:
+                row = conn.execute(f"SELECT COUNT(*) FROM {table_name};").fetchone()
+                return row[0] if row else 0
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' 
+                  AND name NOT LIKE 'sqlite_%' 
+                  AND name NOT LIKE '%_fts%'
+            """)
+            tables = [r[0] for r in cursor.fetchall()]
+            total = 0
+            for t in tables:
+                r = cursor.execute(f"SELECT COUNT(*) FROM {t};").fetchone()
+                if r:
+                    total += r[0]
+            return total
+        except Exception:
+            return 0
         finally:
             conn.close()
+
+    def list_tables(self) -> List[Dict[str, Any]]:
+        try:
+            return self.introspect_schema().get("tables", [])
+        except Exception:
+            return []
 
     def close(self) -> None:
         pass

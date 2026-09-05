@@ -20,6 +20,10 @@ class DynamicDomainDictionary:
     def __init__(self):
         # Dynamically learned entity tokens -> canonical values
         self.term_to_canonical: Dict[str, str] = {}
+        # Mapping from column name to its parent table name
+        self.column_to_table: Dict[str, str] = {}
+        # Set of active table names
+        self.table_names: Set[str] = set()
         # Known categorical values per column (e.g. category names, brands, suppliers)
         self.column_domains: Dict[str, Set[str]] = {}
         # Column aliases learned from schema introspection
@@ -31,7 +35,7 @@ class DynamicDomainDictionary:
                 "left", "balance", "kitna", "kitne", "kitni", "bacha", "bache", "bachi", "pada", "rakha"
             ],
             "PRICE": [
-                "price", "cost", "rate", "mrp", "fee", "value", "worth",
+                "price", "cost", "rate", "mrp", "fee", "value", "worth", "salary",
                 "bhav", "daam", "keemat", "kitne ka", "rupaye"
             ],
             "STATUS": [
@@ -54,18 +58,28 @@ class DynamicDomainDictionary:
         tables = schema_data.get("tables", [])
         for tbl in tables:
             t_name = tbl.get("table_name", "")
-            self.term_to_canonical[t_name.lower()] = t_name
+            t_lower = t_name.lower()
+            self.table_names.add(t_name)
+            self.term_to_canonical[t_lower] = t_name
+            if t_lower.endswith("ies") and len(t_lower) > 3:
+                self.term_to_canonical[t_lower[:-3] + "y"] = t_name
+            elif t_lower.endswith("s") and len(t_lower) > 2:
+                self.term_to_canonical[t_lower[:-1]] = t_name
+            elif not t_lower.endswith("s"):
+                self.term_to_canonical[t_lower + "s"] = t_name
 
             for col in tbl.get("columns", []):
                 c_name = col.get("name", "")
                 c_lower = c_name.lower()
-                self.term_to_canonical[c_lower] = c_name
+                self.column_to_table[c_lower] = t_name
+                if c_lower not in self.term_to_canonical:
+                    self.term_to_canonical[c_lower] = c_name
 
                 # Add sample values to vocabulary
                 for s_val in col.get("sample_values", []):
                     if s_val is not None:
                         s_str = str(s_val).strip()
-                        if s_str and len(s_str) > 1:
+                        if s_str and len(s_str) > 1 and s_str.lower() not in self.term_to_canonical:
                             self.term_to_canonical[s_str.lower()] = s_str
 
     def learn_domain_values(self, column_name: str, values: List[str]) -> None:

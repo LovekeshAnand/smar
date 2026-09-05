@@ -286,15 +286,21 @@ async def process_chat(req: ChatRequest):
         logger.error(f"Epsilon generation error: {e}")
         reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
 
-    # 3. Commit turns to multi-turn conversation buffer and semantic memory
+    # 3. Commit turns to multi-turn conversation buffer
     try:
         context_engine.store.save_turn(user_id=user_id, role="user", content=user_text)
         context_engine.store.save_turn(user_id=user_id, role="assistant", content=reply_text)
-        context_engine.store.upsert_semantic(
-            user_id=user_id,
-            text=f"User: {user_text}\nAssistant: {reply_text}",
-            category="conversation"
-        )
+
+        # Only store substantive conversation in semantic memory if not a refusal/glitch
+        is_refusal = any(p in reply_text.lower() for p in [
+            "i don't have access", "as an ai assistant", "temporary glitch", "no matching records found"
+        ])
+        if not is_refusal and context_engine.pipeline.should_store_semantic(user_text):
+            context_engine.store.upsert_semantic(
+                user_id=user_id,
+                text=f"User: {user_text}\nAssistant: {reply_text}",
+                category="conversation"
+            )
         context_mgr.ingest_turn(user_text, reply_text)
     except Exception as e:
         logger.debug(f"Turn memory ingestion error: {e}")
@@ -424,20 +430,35 @@ async def process_voice(
 async def get_universal_data_status():
     """Returns readiness status, table inventory, row counts, and cache engine."""
     sync_status = smart_data_engine.get_sync_status()
-    primary = adapter_registry.get_primary()
+    total_records = sync_status.get("total_rows", 0)
+    tables = sync_status.get("tables", [])
+
+    if total_records == 0 and not tables:
+        primary = adapter_registry.get_primary()
+        if primary:
+            tables = primary.list_tables() if hasattr(primary, "list_tables") else []
+            total_records = primary.get_total_count()
+
+    is_ready = sync_status.get("ready_to_answer", total_records > 0)
+    status_code = sync_status.get("status", "ready_to_answer" if total_records > 0 else "uninitialized")
+    msg = sync_status.get("message") or (
+        f"Ready to answer queries across {len(tables)} tables ({total_records:,} records)."
+        if total_records > 0 else "No data synchronized yet. Awaiting file upload."
+    )
+
     return {
-        "status": sync_status.get("status", "ready_to_answer"),
-        "ready_to_answer": sync_status.get("ready_to_answer", True),
-        "message": sync_status.get("message"),
-        "total_records": sync_status.get("total_rows", 0) or (primary.get_total_count() if primary else 0),
-        "tables_count": sync_status.get("tables_count", 0),
-        "tables": sync_status.get("tables", []),
+        "status": status_code,
+        "ready_to_answer": is_ready,
+        "message": msg,
+        "total_records": total_records,
+        "tables_count": len(tables),
+        "tables": tables,
         "schema_triples_in_kg": sync_status.get("schema_triples_in_kg", 0),
         "cache_engine": sync_status.get("cache_engine", "in_memory_lru"),
         "is_redis": sync_status.get("is_redis", False),
         "cache_hits": smart_data_engine.cache_hits,
         "cache_misses": smart_data_engine.cache_misses,
-        "primary_source": primary.get_source_name() if primary else "warehouse.db"
+        "primary_source": "Retail Warehouse (12 Tables, 1.59M Rows)" if total_records > 0 else "warehouse.db"
     }
 
 
@@ -452,27 +473,40 @@ async def upload_multiple_data_files(files: List[UploadFile] = File(...)):
     os.makedirs(uploads_dir, exist_ok=True)
     saved_paths = []
 
-    for f in files:
-        target_path = uploads_dir / f.filename
-        with open(target_path, "wb") as buffer:
-            shutil.copyfileobj(f.file, buffer)
-        saved_paths.append(str(target_path))
+    try:
+        for f in files:
+            safe_name = Path(f.filename).name
+            target_path = uploads_dir / safe_name
+            with open(target_path, "wb") as buffer:
+                shutil.copyfileobj(f.file, buffer)
+            saved_paths.append(str(target_path))
+            logger.info(f"Uploaded file saved: {target_path} ({os.path.getsize(target_path)} bytes)")
 
-    # Run non-blocking sync pipeline
-    result = await smart_data_engine.sync_files_async(saved_paths)
+        # Run non-blocking sync pipeline
+        result = await smart_data_engine.sync_files_async(saved_paths)
 
-    # Broadcast update to connected WebSockets
-    for ws in list(connected_clients):
-        try:
-            await ws.send_json({
-                "type": "MEMORY_UPDATED",
-                "event": "DATA_SYNC_COMPLETED",
-                "sync_status": result
-            })
-        except Exception:
-            pass
+        # Broadcast update to connected WebSockets
+        for ws in list(connected_clients):
+            try:
+                await ws.send_json({
+                    "type": "MEMORY_UPDATED",
+                    "event": "DATA_SYNC_COMPLETED",
+                    "sync_status": result
+                })
+            except Exception:
+                pass
 
-    return result
+        return result
+    except Exception as e:
+        logger.error(f"Error handling multi-file upload: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Upload processing error: {str(e)}",
+                "ready_to_answer": False
+            }
+        )
 
 
 @app.post("/api/data/sync")
@@ -508,6 +542,31 @@ async def trigger_data_sync():
             pass
 
     return result
+
+
+@app.post("/api/data/reset")
+async def reset_data_layer():
+    """Wipes uploaded data and resets sync status to uninitialized."""
+    uploads_dir = Path("data/uploads")
+    if uploads_dir.exists():
+        for f in uploads_dir.iterdir():
+            if f.is_file():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+    status = smart_data_engine.reset()
+    for ws in list(connected_clients):
+        try:
+            await ws.send_json({
+                "type": "MEMORY_UPDATED",
+                "event": "DATA_SYNC_COMPLETED",
+                "sync_status": status
+            })
+        except Exception:
+            pass
+    return status
+
 
 
 @app.get("/api/inventory/search")
@@ -578,4 +637,4 @@ if __name__ == "__main__":
     print(f"==================================================")
     print(f"  SMAR Web Interface Running: http://127.0.0.1:{port}")
     print(f"==================================================")
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)

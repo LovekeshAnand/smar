@@ -151,10 +151,30 @@ class HybridRetriever:
             else:
                 break
 
+        # 8. Check for session conversation recall queries
+        lower_q = query.lower()
+        is_history_query = any(k in lower_q for k in [
+            "first question", "1st question", "earlier", "previous question",
+            "what did i ask", "what i asked", "past question", "first thing",
+            "what was the first", "what was the 1st"
+        ])
+        session_history = {}
+        if is_history_query:
+            if hasattr(self.store, "get_first_turn"):
+                first_turn = self.store.get_first_turn(user_clean)
+                if first_turn:
+                    session_history["first_question"] = first_turn.get("content")
+            if hasattr(self.store, "get_all_user_questions"):
+                all_q = self.store.get_all_user_questions(user_clean, limit=10)
+                if all_q:
+                    session_history["all_questions"] = all_q
+
         return {
             "user_id": user_clean,
             "user_profile": profile,
             "structured_facts": selected_facts,
             "semantic_memories": selected_semantic,
+            "session_history": session_history,
             "estimated_tokens": current_tokens
         }
+

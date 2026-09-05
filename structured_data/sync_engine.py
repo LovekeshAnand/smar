@@ -89,6 +89,16 @@ class UniversalDataSyncEngine:
             "error": self.error_message
         }
 
+    def reset(self):
+        """Resets sync state to uninitialized."""
+        self.status = "uninitialized"
+        self.synced_tables = []
+        self.total_rows_synced = 0
+        self.schema_triples_synced = 0
+        self.last_sync_time = None
+        self.sync_duration_sec = 0.0
+        self.error_message = None
+
     def sync_files(self, file_paths: List[str]) -> Dict[str, Any]:
         """
         Main synchronization pipeline:
@@ -123,12 +133,7 @@ class UniversalDataSyncEngine:
 
             # Stage 4: Dynamically learn vocabulary in domain dictionary
             if self.domain_dict:
-                for t in tables:
-                    tname = t["table_name"]
-                    self.domain_dict.term_to_canonical[tname.lower()] = tname
-                    for col in t.get("columns", []):
-                        cname = col["name"]
-                        self.domain_dict.term_to_canonical[cname.lower()] = cname
+                self.domain_dict.learn_from_schema({"tables": tables})
 
             # Stage 5: Cache warming & query cache invalidation
             hot_cache.clear()

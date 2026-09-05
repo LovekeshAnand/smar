@@ -160,12 +160,17 @@ export default function Home() {
   const handleUploadFile = async (file: File) => {
     try {
       const formData = new FormData();
-      formData.append("files", file);
-      const res = await fetch("/api/data/upload", {
+      const uploadUrl = typeof window !== "undefined" && window.location.port === "3000"
+        ? `http://${window.location.hostname}:5000/api/data/upload`
+        : "/api/data/upload";
+      const res = await fetch(uploadUrl, {
         method: "POST",
         body: formData,
       });
-      if (!res.ok) throw new Error("Upload failed");
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || "Upload failed");
+      }
       await fetchInventoryStatus();
       await fetchMemoryGraph(currentUser.username);
       await fetchMemoryVectors(currentUser.username);

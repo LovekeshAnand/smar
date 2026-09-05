@@ -545,3 +545,38 @@ class NativeHybridStore(BaseMemoryStore):
             ordered = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
             return ordered
 
+    def get_first_turn(self, user_id: str) -> Optional[Dict[str, str]]:
+        """Returns the very first user question/turn in this conversation session."""
+        user_clean = user_id.strip() or "default_user"
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT role, content FROM conversation_turns
+                WHERE user_id = ? AND role = 'user' AND content NOT IN ('naa', '(unrecognized speech)')
+                ORDER BY id ASC LIMIT 1
+            """, (user_clean,))
+            row = cursor.fetchone()
+            if row:
+                return {"role": row["role"], "content": row["content"]}
+            return None
+
+    def get_all_user_questions(self, user_id: str, limit: int = 20) -> List[str]:
+        """Returns chronological list of distinct user questions asked in this session."""
+        user_clean = user_id.strip() or "default_user"
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT content FROM conversation_turns
+                WHERE user_id = ? AND role = 'user' AND content NOT IN ('naa', '(unrecognized speech)')
+                ORDER BY id ASC LIMIT ?
+            """, (user_clean, limit))
+            questions = []
+            seen = set()
+            for r in cursor.fetchall():
+                txt = r["content"].strip()
+                if txt and txt.lower() not in seen:
+                    seen.add(txt.lower())
+                    questions.append(txt)
+            return questions
+
+

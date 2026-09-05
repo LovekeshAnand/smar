@@ -14,6 +14,7 @@ Features:
 """
 
 import os
+import json
 import sqlite3
 import logging
 import asyncio
@@ -373,18 +374,38 @@ class MultiTableWarehouseManager:
                         except Exception as e:
                             logger.debug(f"FTS OR search note on {fts_table}: {e}")
 
-                # 3. Fallback to LIKE search if FTS yielded no results
+                # 3. Fallback to schema-introspected column search if FTS yielded no results
                 if not table_hits:
                     try:
                         cur.execute(f"PRAGMA table_info(\"{tname}\");")
-                        cols = [r["name"] for r in cur.fetchall() if "int" not in str(r["type"]).lower()]
-                        if cols:
-                            where_clauses = " OR ".join([f"\"{c}\" LIKE ?" for c in cols[:4]])
-                            like_params = [f"%{terms[0]}%"] * min(len(cols), 4)
-                            cur.execute(f"SELECT * FROM \"{tname}\" WHERE {where_clauses} LIMIT ?;", (*like_params, limit))
-                            table_hits = [dict(r) for r in cur.fetchall()]
+                        table_cols = cur.fetchall()
+
+                        # First check if any term is a numeric ID matching integer/id columns
+                        num_terms = [int(t) for t in terms if t.isdigit()]
+                        if num_terms:
+                            num_cols = [r["name"] for r in table_cols if "int" in str(r["type"]).lower() or "id" in r["name"].lower() or r["pk"]]
+                            for nc in num_cols:
+                                for nt in num_terms:
+                                    cur.execute(f"SELECT * FROM \"{tname}\" WHERE \"{nc}\" = ? LIMIT ?;", (nt, limit))
+                                    hits = [dict(r) for r in cur.fetchall()]
+                                    if hits:
+                                        table_hits.extend(hits)
+                                        break
+                                if table_hits:
+                                    break
+
+                        # Text LIKE match for non-numeric or general terms
+                        if not table_hits:
+                            text_terms = [t for t in terms if not t.isdigit()]
+                            search_term = text_terms[0] if text_terms else terms[0]
+                            cols = [r["name"] for r in table_cols if "int" not in str(r["type"]).lower()]
+                            if cols:
+                                where_clauses = " OR ".join([f"\"{c}\" LIKE ?" for c in cols[:4]])
+                                like_params = [f"%{search_term}%"] * min(len(cols), 4)
+                                cur.execute(f"SELECT * FROM \"{tname}\" WHERE {where_clauses} LIMIT ?;", (*like_params, limit))
+                                table_hits = [dict(r) for r in cur.fetchall()]
                     except Exception as e:
-                        logger.debug(f"LIKE fallback note on {tname}: {e}")
+                        logger.debug(f"Search fallback note on {tname}: {e}")
 
                 for item in table_hits:
                     item["_source_table"] = tname
@@ -423,8 +444,8 @@ class MultiTableWarehouseManager:
                 if not id_column and cols:
                     id_column = cols[0]["name"]
 
-            query = f"SELECT * FROM \"{table_name}\" WHERE \"{id_column}\" = ? LIMIT 1;"
-            cur.execute(query, (id_value,))
+            query = f"SELECT * FROM \"{table_name}\" WHERE \"{id_column}\" = ? OR LOWER(\"{id_column}\") = LOWER(?) LIMIT 1;"
+            cur.execute(query, (id_value, str(id_value)))
             row = cur.fetchone()
             if row:
                 res = dict(row)

@@ -44,17 +44,32 @@ class PromptComposer:
             f"You are {self.config.assistant_name}, a memory-driven autonomous voice assistant.",
             f"You are conversing with {user_name} (User ID: {user_id}).",
             "",
-            "=== CRITICAL IDENTITY PROTECTION ===",
+            "=== CRITICAL IDENTITY & MEMORY DIRECTIVES ===",
             f"1. Your name is strictly {self.config.assistant_name}. You are the assistant.",
-            f"2. You are NOT {user_name}. {user_name} is the human speaking to you.",
-            f"3. NEVER introduce yourself as {user_name}. If asked 'Who are you?', answer: 'I am {self.config.assistant_name}'.",
+            f"2. You are NOT {user_name}. The human speaking to you is {user_name}.",
+            f"3. NEVER introduce yourself as {user_name}. If asked 'Who are you?' or 'What is your name?', answer clearly: 'My name is {self.config.assistant_name}.'",
             f"4. If {user_name} asks 'Who am I?' or 'What is my name?', answer using the user's name: '{user_name}'.",
+            f"5. If asked about earlier questions or what was asked before, refer directly to the [Conversation Session History] below.",
+            f"6. NEVER state 'As an AI assistant, I don't have access to previous conversations or personal details' - you have full persistent memory of this conversation and user!",
             ""
         ]
 
         # Contextual Knowledge Section
         has_context = False
         context_lines = ["=== RECALLED MEMORY & USER CONTEXT ==="]
+
+        # Session Conversation History (for recall questions)
+        session_hist = retrieval_result.get("session_history", {})
+        if session_hist:
+            context_lines.append("[Conversation Session History]")
+            if session_hist.get("first_question"):
+                context_lines.append(f"- 1st Question Asked By User: \"{session_hist['first_question']}\"")
+            if session_hist.get("all_questions"):
+                q_list = session_hist["all_questions"]
+                context_lines.append("- Chronological User Questions in this Session:")
+                for idx, q_text in enumerate(q_list[:6], 1):
+                    context_lines.append(f"  {idx}. \"{q_text}\"")
+            has_context = True
 
         # Profile attributes
         profile_items = []

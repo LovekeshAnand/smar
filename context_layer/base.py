@@ -91,3 +91,12 @@ class BaseMemoryStore(ABC):
         """Returns the most recent conversation turns in chronological order."""
         pass
 
+    def get_first_turn(self, user_id: str) -> Optional[Dict[str, str]]:
+        """Returns the first user question of the conversation session."""
+        return None
+
+    def get_all_user_questions(self, user_id: str, limit: int = 20) -> List[str]:
+        """Returns chronological list of user questions from the conversation session."""
+        return []
+
+

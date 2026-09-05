@@ -97,12 +97,23 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
         formData.append("files", file);
       });
 
-      const res = await fetch("/api/data/upload", {
+      const uploadUrl = typeof window !== "undefined" && window.location.port === "3000"
+        ? `http://${window.location.hostname}:5000/api/data/upload`
+        : "/api/data/upload";
+
+      const res = await fetch(uploadUrl, {
         method: "POST",
         body: formData,
       });
 
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = { detail: rawText.slice(0, 200) };
+      }
+
       if (res.ok) {
         setUploadFeedback(`Success! Synced ${selectedFiles.length} file(s). System is ready to answer!`);
         setSelectedFiles([]);
@@ -111,7 +122,7 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
         if (onRefreshVectors) onRefreshVectors();
         setTimeout(() => setUploadFeedback(null), 4000);
       } else {
-        setUploadFeedback(`Upload issue: ${data.detail || "Error during sync"}`);
+        setUploadFeedback(`Upload issue: ${data.detail || data.message || "Error during sync"}`);
       }
     } catch (err: any) {
       console.error("Upload error:", err);
@@ -124,7 +135,10 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
   const handleTriggerSync = async () => {
     setIsSyncing(true);
     try {
-      const res = await fetch("/api/data/sync", { method: "POST" });
+      const syncUrl = typeof window !== "undefined" && window.location.port === "3000"
+        ? `http://${window.location.hostname}:5000/api/data/sync`
+        : "/api/data/sync";
+      const res = await fetch(syncUrl, { method: "POST" });
       if (res.ok) {
         if (onRefreshInventory) onRefreshInventory();
         if (onRefreshGraph) onRefreshGraph();
@@ -134,6 +148,23 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
       console.error("Sync error:", err);
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleResetData = async () => {
+    if (!confirm("Wipe all data and reset to uninitialized?")) return;
+    try {
+      const resetUrl = typeof window !== "undefined" && window.location.port === "3000"
+        ? `http://${window.location.hostname}:5000/api/data/reset`
+        : "/api/data/reset";
+      await fetch(resetUrl, { method: "POST" });
+      if (onRefreshInventory) onRefreshInventory();
+      if (onRefreshGraph) onRefreshGraph();
+      if (onRefreshVectors) onRefreshVectors();
+      setUploadFeedback("Data layer reset to uninitialized.");
+      setTimeout(() => setUploadFeedback(null), 3000);
+    } catch (err) {
+      console.error("Reset error:", err);
     }
   };
 
@@ -271,6 +302,13 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
                     Refresh
                   </button>
                 )}
+                <button
+                  onClick={handleResetData}
+                  className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 font-mono text-[11px] transition-colors border border-red-500/20"
+                  title="Wipe data and reset status"
+                >
+                  Reset
+                </button>
               </div>
             </div>
 

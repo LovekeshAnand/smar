@@ -154,3 +154,13 @@ class Mem0StoreAdapter(BaseMemoryStore):
     def get_recent_turns(self, user_id: str, limit: int = 6) -> List[Dict[str, str]]:
         return self.fallback.get_recent_turns(user_id, limit)
 
+    def get_first_turn(self, user_id: str) -> Optional[Dict[str, str]]:
+        return self.fallback.get_first_turn(user_id)
+
+    def get_all_user_questions(self, user_id: str, limit: int = 20) -> List[str]:
+        return self.fallback.get_all_user_questions(user_id, limit)
+
+    def get_memory_graph(self, user_id: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        return self.fallback.get_memory_graph(user_id, limit)
+
+

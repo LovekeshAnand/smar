@@ -46,8 +46,8 @@ class SmartIntentEntityExtractor:
         raw_words = re.findall(r"[a-zA-Z0-9_\-]+", lower)
         meaningful_tokens = [w for w in raw_words if w not in stop_words and len(w) > 1]
 
-        # 4. Check for barcode or alphanumeric SKU/item code patterns (e.g. INV-100234, PART-892, 8901030001)
-        code_candidates = [w for w in raw_words if (w.isdigit() and len(w) >= 6) or ("-" in w and any(c.isdigit() for c in w))]
+        # 4. Check for barcode, numeric IDs, or alphanumeric SKU/item code patterns
+        code_candidates = [w for w in raw_words if w.isdigit() or ("-" in w and any(c.isdigit() for c in w))]
 
         # Build candidate search string
         candidate_terms = []

@@ -31,8 +31,11 @@ STOP_WORDS: Set[str] = {
 
 # Rich heuristic patterns for instant zero-dependency relational extraction
 EXTRACTION_PATTERNS = [
-    # User's name
-    (re.compile(r"(?:my name is|i am called|call me|myself)\s+([A-Za-z0-9_\-\s]{1,30})", re.IGNORECASE), "Name"),
+    # User's name: handles "my name is X", "i am called X", "call me X", "i am X", "i'm X"
+    (re.compile(
+        r"(?:(?:my name is|i am called|call me|myself)\s+|(?:^|\b)(?:i am|i'm)\s+(?!(?:a|an|the|just|looking|asking|trying|here|not|so|very|currently|always|busy|working|going|from)\b))([A-Za-z][A-Za-z0-9_\-]*(?:\s+[A-Za-z][A-Za-z0-9_\-]*)?)(?=\s+(?:can|could|please|and|who|from|,|\.|$)|$)",
+        re.IGNORECASE
+    ), "Name"),
     (re.compile(r"(?:मेरा नाम|main hoon)\s+([A-Za-z\u0900-\u097F\s]{1,30})", re.IGNORECASE), "Name"),
     
     # Location / Residence / Origin
@@ -79,7 +82,7 @@ class KnowledgeFormationPipeline:
 
     def _split_into_clauses(self, text: str) -> List[str]:
         """Splits compound sentences by conjunctions to prevent compound fact bleeding."""
-        split_regex = r"(?:\s+(?:and|also|as well as|plus|aur|तथा|और)\s+|[;\n]+|(?<=[a-zA-Z0-9])\.\s+(?=[A-Z\u0900-\u097F])|,\s*(?=[a-z\u0900-\u097F]))"
+        split_regex = r"(?:\s+(?:and|also|as well as|plus|aur|तथा|और|can you|could you|please)\s+|[;\n]+|(?<=[a-zA-Z0-9])\.\s+(?=[A-Z\u0900-\u097F])|,\s*(?=[a-z\u0900-\u097F]))"
         raw_clauses = re.split(split_regex, text, flags=re.IGNORECASE)
         clauses = []
         for c in raw_clauses:
@@ -131,7 +134,19 @@ class KnowledgeFormationPipeline:
         seen_keys = set()
 
         for clause in clauses:
+            # Check if clause is purely a question / inquiry asking for information
+            clause_clean = clause.strip()
+            is_pure_question = bool(re.search(
+                r"^(?:what|who|where|when|why|how|which|whose|whom|is|are|can|could|would|do|does|did|tell|show|give)\b",
+                clause_clean,
+                re.IGNORECASE
+            )) or clause_clean.endswith("?")
+
             for pattern, predicate in EXTRACTION_PATTERNS:
+                # If clause is a question asking about name/location, do not extract it as a statement
+                if is_pure_question and predicate in ("Name", "LivesIn", "Role", "WorksAt"):
+                    continue
+
                 matches = pattern.finditer(clause)
                 for m in matches:
                     if predicate == "Favorite":
@@ -180,31 +195,37 @@ class KnowledgeFormationPipeline:
     async def extract_facts_llm(
         self,
         user_text: str,
-        reply_text: str,
-        user_id: str,
+        reply_text: str = "",
+        user_id: str = "default_user",
         api_base: str = "http://127.0.0.1:8088"
     ) -> List[Dict[str, Any]]:
         """
         Uses the local Epsilon LLM (Qwen 7B) to extract nuanced, natural conversational facts.
-        Completely overcomes regex limitations for real-world natural conversation.
+        Strictly extracts facts stated by the user about themselves, never attributing
+        database records or assistant replies to the user.
         """
-        if not user_text or len(user_text.strip()) < 8:
+        if not user_text or len(user_text.strip()) < 5:
             return []
 
         user_clean = user_id.strip() or "default_user"
+
         prompt = (
             "<|im_start|>system\n"
-            f"You are a knowledge graph extractor. Analyze the conversation turn and extract ONLY concrete personal facts, preferences, background, work, location, projects, or relationships explicitly stated by or about the User ({user_clean}).\n"
-            f"Always use '{user_clean}' as the subject for facts about the user.\n"
-            "Return ONLY a JSON array of objects with keys: 'subject', 'predicate', 'object'.\n"
-            "Predicate should be concise PascalCase (e.g. LivesIn, Role, WorksOn, Prefers, HasSkill, PlansTo, StudiedAt).\n"
-            "CRITICAL: If a detail is NOT mentioned, DO NOT include it! NEVER output placeholders like 'Not specified', 'Unknown', 'None', or 'N/A'. If no personal facts are stated, return [].\n"
+            f"You are a knowledge graph extractor for an AI assistant named {self.assistant_name}.\n"
+            f"Extract personal facts, identity, location, role, or preferences explicitly stated by the human user ({user_clean}) about themselves.\n\n"
+            "CRITICAL RULES:\n"
+            f"1. Extract facts ONLY when the user explicitly reveals personal facts about themselves (e.g. name, location, job, preferences).\n"
+            f"2. Subject must be '{user_clean}'.\n"
+            "3. NEVER extract questions, inquiries, or database search queries.\n"
+            "   - Questions like 'what is my name?', 'what was the 1st question?', 'who are you?', 'what is employee salary?' are QUESTIONS, NOT FACTS. Output [] for them.\n"
+            "4. NEVER attribute database items, inventory details, employee records, order dates, or assistant lookup answers to the user.\n"
+            "5. If a message contains an introduction followed by a question (e.g. 'hi i am lokesh can you tell me...'), ONLY extract the user's name ('Name' -> 'lokesh'). Do NOT extract the question or warehouse details.\n"
+            "6. Output format: Return ONLY a valid JSON array of objects with keys 'subject', 'predicate', 'object', or [] if no personal facts are found.\n"
             "<|im_end|>\n"
             "<|im_start|>user\n"
-            f"User: {user_text}\n"
-            f"Assistant: {reply_text}\n"
+            f"User message: \"{user_text}\"\n"
             "<|im_end|>\n"
-            "<|im_start|>assistant\n["
+            "<|im_start|>assistant\n"
         )
 
         endpoint = api_base.rstrip("/")
@@ -219,8 +240,8 @@ class KnowledgeFormationPipeline:
                     json={
                         "prompt": prompt,
                         "n_predict": 128,
-                        "temperature": 0.1,
-                        "stop": ["<|im_end|>", "\n\n", "```"],
+                        "temperature": 0.0,
+                        "stop": ["<|im_end|>", "\n\n", "```\n"],
                         "stream": False
                     }
                 )
@@ -228,18 +249,27 @@ class KnowledgeFormationPipeline:
                     return []
 
                 raw = res.json().get("content", "").strip()
-                full_json = "[" + raw
-                end_idx = full_json.rfind("]")
-                if end_idx != -1:
-                    full_json = full_json[:end_idx + 1]
-                else:
-                    full_json += "]"
+                # Clean code markdown blocks if present
+                clean = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+                clean = re.sub(r"```$", "", clean).strip()
 
-                parsed = json.loads(full_json)
+                # Find outermost JSON array brackets
+                start_bracket = clean.find("[")
+                end_bracket = clean.rfind("]")
+                if start_bracket == -1 or end_bracket == -1 or end_bracket < start_bracket:
+                    return []
+
+                json_str = clean[start_bracket:end_bracket + 1]
+                parsed = json.loads(json_str)
+
                 invalid_placeholders = {
                     "not specified", "unknown", "none", "n/a", "unspecified",
                     "null", "not mentioned", "not provided", "tbd", "n.a.",
                     "nothing", "not available", "none specified", "no info", "not given"
+                }
+
+                invalid_predicates = {
+                    "question", "first_question", "looking up data", "query", "asking"
                 }
 
                 valid_facts = []
@@ -249,7 +279,9 @@ class KnowledgeFormationPipeline:
                         pred = item.get("predicate", "").strip()
                         obj = item.get("object", "").strip()
 
-                        # Discard invalid or placeholder objects
+                        # Discard invalid predicates or placeholders
+                        if pred.lower() in invalid_predicates:
+                            continue
                         low_obj = obj.lower()
                         if low_obj in invalid_placeholders or any(low_obj.startswith(p) for p in ("not specified", "not mentioned", "unknown", "unspecified")):
                             continue
@@ -272,7 +304,7 @@ class KnowledgeFormationPipeline:
     def should_store_semantic(self, text: str) -> bool:
         """
         Determines whether a message contains substantive information worthy
-        of entering the semantic vector memory (avoids short chitchat / greetings).
+        of entering the semantic vector memory (avoids short chitchat, greetings, and ephemeral queries).
         """
         clean = text.strip()
         if len(clean) < 6:
@@ -283,4 +315,10 @@ class KnowledgeFormationPipeline:
         if low in greetings:
             return False
 
+        # Exclude questions asking for data / lookups / meta-questions from semantic memory
+        # to avoid polluting vector store with ephemeral query logs
+        if re.match(r"^(?:what|who|where|when|why|how|which|whose|whom|is|are|can|could|tell me|show me|give me|find|search)\b", low):
+            return False
+
         return True
+
