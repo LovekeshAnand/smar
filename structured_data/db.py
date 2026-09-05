@@ -237,7 +237,13 @@ class InventoryDatabaseManager:
         """Perform sub-millisecond full-text / fuzzy search using FTS5 index."""
         conn = self.get_connection()
         try:
-            tokens = [token for token in query.strip().split() if token]
+            raw_tokens = [token for token in query.strip().split() if token]
+            tokens = []
+            for tok in raw_tokens:
+                cleaned = "".join([c for c in tok if c.isalnum()]).strip()
+                if cleaned:
+                    tokens.append(cleaned)
+
             if not tokens:
                 return []
 
@@ -250,12 +256,12 @@ class InventoryDatabaseManager:
             LIMIT ?;
             """
             # 1. Try strict AND first
-            formatted_query = " ".join([f"{t}*" for t in tokens])
+            formatted_query = " ".join([f'"{t}"*' for t in tokens])
             rows = conn.execute(sql, (formatted_query, limit)).fetchall()
 
             # 2. If no exact match, fallback to ranking OR
             if not rows and len(tokens) > 1:
-                formatted_query_or = " OR ".join([f"{t}*" for t in tokens])
+                formatted_query_or = " OR ".join([f'"{t}"*' for t in tokens])
                 rows = conn.execute(sql, (formatted_query_or, limit)).fetchall()
 
             return [dict(r) for r in rows]

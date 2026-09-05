@@ -130,6 +130,88 @@ class SchemaIntrospector:
         logger.info(f"Dynamically introspected and synced {len(triples)} schema triples for '{source_name}'.")
         return triples
 
+    def introspect_multi_table(
+        self,
+        warehouse_manager,
+        schema_user_id: str = "system_schema"
+    ) -> List[Dict[str, str]]:
+        """
+        Introspects all tables, columns, and foreign keys in a MultiTableWarehouseManager
+        and syncs structural relational triples into the Knowledge Graph.
+        """
+        tables = warehouse_manager.list_tables()
+        triples: List[Dict[str, str]] = []
+
+        triples.append({
+            "subject": "WarehouseDatabase",
+            "predicate": "is_data_source_type",
+            "object": "multi_table_warehouse"
+        })
+
+        for t_info in tables:
+            t_name = t_info["table_name"]
+            row_count = t_info["row_count"]
+
+            triples.append({
+                "subject": "WarehouseDatabase",
+                "predicate": "has_table",
+                "object": t_name
+            })
+            triples.append({
+                "subject": t_name,
+                "predicate": "has_row_count",
+                "object": str(row_count)
+            })
+
+            detailed = warehouse_manager.get_table_schema(t_name)
+
+            for col_name, col_type in detailed.get("columns", {}).items():
+                is_volatile = str(self.is_column_volatile(col_name, col_type)).lower()
+                triples.append({
+                    "subject": t_name,
+                    "predicate": "has_column",
+                    "object": col_name
+                })
+                triples.append({
+                    "subject": f"{t_name}.{col_name}",
+                    "predicate": "has_data_type",
+                    "object": col_type
+                })
+                triples.append({
+                    "subject": f"{t_name}.{col_name}",
+                    "predicate": "is_volatile_field",
+                    "object": is_volatile
+                })
+
+            # Foreign key relations
+            for fk in detailed.get("foreign_keys", []):
+                triples.append({
+                    "subject": t_name,
+                    "predicate": "references_table",
+                    "object": fk["to_table"]
+                })
+                triples.append({
+                    "subject": f"{t_name}.{fk['from_col']}",
+                    "predicate": "foreign_key_to",
+                    "object": f"{fk['to_table']}.{fk['to_col']}"
+                })
+
+        if self.context_store:
+            for t in triples:
+                try:
+                    self.context_store.upsert_triple(
+                        user_id=schema_user_id,
+                        subject=t["subject"],
+                        predicate=t["predicate"],
+                        object_val=t["object"],
+                        confidence=1.0
+                    )
+                except Exception as e:
+                    logger.debug(f"Error persisting multi-table schema triple: {e}")
+
+        logger.info(f"Introspected multi-table warehouse: {len(tables)} tables, {len(triples)} triples.")
+        return triples
+
     def get_compact_schema_prompt(self, adapter: BaseStorageAdapter) -> str:
         """
         Generates a concise schema map for the LLM reasoning prompt.
@@ -145,3 +227,4 @@ class SchemaIntrospector:
             lines.append(f"Table `{t_name}` ({tbl.get('row_count', 0):,} rows):")
             lines.append(f"  Columns: {', '.join(cols)}")
         return "\n".join(lines)
+

@@ -1,19 +1,22 @@
 """
 smart_data/engine.py
 ====================
-Core Coordinator for SMAR v2 Smart Data Layer.
-Connects the Cognitive Context Layer (Knowledge Graph) with the Structured Data Layer.
+Universal Smart Data Layer Engine for SMAR v2.
+Completely domain-agnostic: adapts dynamically to ANY arbitrary dataset
+(Medical, Aviation, Retail, Logistics, IoT, Finance, Academic, etc.).
+
 Coordinates:
-1. Intent Classification & Entity Extraction
-2. Query Understanding & Builder
-3. KG Cache Lookup (Warm Memory)
-4. Smart DB Query Engine (Indexed Access via Adapter)
-5. Results Aggregator & Normalizer
-6. Learn & Write Back (Updates KG Cache with resolved facts)
+1. Universal Data Sync Engine (syncs any unexpected files into warehouse & KG).
+2. Dynamic Intent & Entity Extraction (vocabulary learned from introspected schemas).
+3. Hot Cache lookup (TieredHotCache: Redis Docker or In-Memory LRU).
+4. Relational & Full-Text Search Engine (non-blocking).
+5. Dynamic Spoken Formulation (generates answers based on actual retrieved schema columns).
+6. Continuous Learning & KG Write-back.
 """
 
 import time
 import logging
+import asyncio
 from typing import Dict, Any, List, Optional
 
 from .dictionary import DynamicDomainDictionary
@@ -22,44 +25,69 @@ from .query_builder import SmartQueryBuilder
 from structured_data.adapters.registry import AdapterRegistry
 from structured_data.adapters.base import BaseStorageAdapter
 from structured_data.schema_introspector import SchemaIntrospector
+from structured_data.multi_table_manager import MultiTableWarehouseManager
+from structured_data.sync_engine import UniversalDataSyncEngine
+from structured_data.cache import hot_cache
 
 logger = logging.getLogger("smar.smart_data.engine")
 
 
 class SmartDataLayerEngine:
     """
-    Unified Smart Data Layer Engine for SMAR v2.
+    Unified, Domain-Agnostic Smart Data Layer Engine for SMAR v2.
     """
 
     def __init__(
         self,
         adapter_registry: Optional[AdapterRegistry] = None,
-        context_store = None
+        context_store = None,
+        warehouse_manager: Optional[MultiTableWarehouseManager] = None
     ):
         self.registry = adapter_registry or AdapterRegistry()
         self.context_store = context_store
+        self.warehouse_manager = warehouse_manager or MultiTableWarehouseManager()
         self.domain_dict = DynamicDomainDictionary()
         self.intent_extractor = SmartIntentEntityExtractor(domain_dict=self.domain_dict)
         self.query_builder = SmartQueryBuilder()
         self.schema_introspector = SchemaIntrospector(context_store=self.context_store)
 
-        # Cache hit/miss counters for metrics
+        # Universal Sync Engine
+        self.sync_engine = UniversalDataSyncEngine(
+            warehouse_manager=self.warehouse_manager,
+            context_store=self.context_store,
+            domain_dict=self.domain_dict
+        )
+
+        # Cache hit/miss counters
         self.cache_hits = 0
         self.cache_misses = 0
 
-        # Sync active primary adapter schema if available
-        self.sync_active_schema()
+        # Sync initial state if tables already exist
+        self.refresh_schema()
 
-    def sync_active_schema(self) -> None:
-        """Introspects primary adapter and populates KG and domain dictionary."""
+    def refresh_schema(self) -> None:
+        """Dynamically learns from whatever tables exist in the warehouse or primary adapter."""
         try:
-            adapter = self.registry.get_primary()
-            schema = adapter.introspect_schema()
-            self.domain_dict.learn_from_schema(schema)
-            self.schema_introspector.introspect_and_sync(adapter)
-            logger.info(f"SmartDataLayer synced with adapter: {adapter.get_source_name()}")
+            # 1. Check warehouse tables
+            tables = self.warehouse_manager.list_tables()
+            if tables:
+                for t in tables:
+                    tname = t["table_name"]
+                    self.domain_dict.term_to_canonical[tname.lower()] = tname
+                    for col in t.get("columns", []):
+                        cname = col["name"]
+                        self.domain_dict.term_to_canonical[cname.lower()] = cname
+
+            # 2. Check primary adapter if registered
+            primary = self.registry.get_primary()
+            if primary:
+                schema = primary.introspect_schema()
+                self.domain_dict.learn_from_schema(schema)
+                self.schema_introspector.introspect_and_sync(primary)
+
+            logger.info("SmartDataLayerEngine refreshed schema dynamically.")
         except Exception as e:
-            logger.warning(f"Could not sync schema on init: {e}")
+            logger.debug(f"Initial schema refresh note: {e}")
 
     def load_new_datasource(self, file_or_db_path: str) -> BaseStorageAdapter:
         """
@@ -67,30 +95,56 @@ class SmartDataLayerEngine:
         Updates schema, introspects into KG, and resets dictionary.
         """
         adapter = self.registry.load_file_adapter(file_or_db_path, set_as_primary=True)
-        self.sync_active_schema()
+        self.refresh_schema()
+        # Also sync into warehouse
+        try:
+            self.warehouse_manager.ingest_file(file_or_db_path)
+            self.sync_engine.get_status()
+        except Exception as e:
+            logger.debug(f"Warehouse ingest note on single file load: {e}")
         return adapter
+
+    def sync_files(self, file_paths: List[str]) -> Dict[str, Any]:
+        """Runs the Universal Data Sync Engine across any uploaded files."""
+        status = self.sync_engine.sync_files(file_paths)
+        self.refresh_schema()
+        return status
+
+    async def sync_files_async(self, file_paths: List[str]) -> Dict[str, Any]:
+        """Non-blocking async sync to keep voice loop completely unblocked."""
+        return await asyncio.to_thread(self.sync_files, file_paths)
+
+    def get_sync_status(self) -> Dict[str, Any]:
+        """Returns readiness status and table statistics."""
+        return self.sync_engine.get_status()
 
     def process_query(self, user_text: str, user_id: str = "default_user") -> Dict[str, Any]:
         """
         Main cognitive query pipeline across the Smart Data Layer.
+        Zero domain hardcoding: dynamically adapts to any table and column.
         """
         start_time = time.perf_counter()
-        adapter = self.registry.get_primary()
-        schema_data = adapter.introspect_schema()
 
         # Step 1: Dynamic Intent & Entity Extraction
         extracted = self.intent_extractor.extract(user_text)
         intent = extracted["intent"]
         search_query = extracted.get("search_query", "").strip()
 
-        # Step 2: KG Cache Lookup (Check if entity was previously resolved in KG)
+        # Step 2: KG Cache Lookup (Warm Memory) & Hot Entity Cache
         resolved_item_id = None
         kg_cache_hit = False
-        cached_facts = []
+
+        # Check Hot Cache for entity resolution first
+        if search_query:
+            cached_entity = hot_cache.get_entity(search_query)
+            if cached_entity:
+                ident = cached_entity.get("item_id") or cached_entity.get("product_id") or cached_entity.get("id")
+                if ident:
+                    resolved_item_id = ident
+                    kg_cache_hit = True
 
         if self.context_store and search_query:
             try:
-                # Query KG cache for entity resolution links
                 candidates = [search_query.lower()]
                 res_triples = self.context_store.query_triples_for_entities(
                     user_id="kg_cache",
@@ -105,14 +159,25 @@ class SmartDataLayerEngine:
             except Exception as e:
                 logger.debug(f"KG cache lookup error: {e}")
 
-        # Step 3: Execute Smart DB Query Engine
-        query_spec = self.query_builder.build_query(extracted, schema_data)
-        op = query_spec.get("operation")
+        # Step 3: Query Execution
         db_results: List[Dict[str, Any]] = []
 
         if resolved_item_id:
-            # Direct indexed primary key lookup
-            item = adapter.get_item_by_id(resolved_item_id)
+            # Check primary adapter first if registered, then warehouse
+            item = None
+            adapter = self.registry.get_primary()
+            if adapter:
+                try:
+                    item = adapter.get_item_by_id(resolved_item_id)
+                except Exception:
+                    pass
+
+            if not item:
+                for tbl in self.warehouse_manager.list_tables():
+                    item = self.warehouse_manager.get_record_by_id(tbl["table_name"], resolved_item_id)
+                    if item:
+                        break
+
             if item:
                 db_results = [item]
                 self.cache_hits += 1
@@ -120,106 +185,122 @@ class SmartDataLayerEngine:
                 self.cache_misses += 1
         else:
             self.cache_misses += 1
-            # Execute based on operation
-            if op == "EXACT_ID":
-                item = adapter.get_item_by_id(query_spec["item_id"])
-                if item:
-                    db_results = [item]
-            elif op == "AGGREGATE":
-                agg_res = adapter.get_aggregations(group_by=query_spec.get("group_by"))
-                return {
-                    "intent": intent,
-                    "operation": "AGGREGATE",
-                    "data": agg_res,
-                    "spoken_text": f"Warehouse has {agg_res.get('total_records', 0):,} total inventory items.",
-                    "kg_cache_hit": False,
-                    "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
-                }
-            elif op == "FILTER":
-                db_results = adapter.filter_items(query_spec.get("filters", {}), limit=query_spec.get("limit", 5))
-            else:
-                # Text search
-                db_results = adapter.search_by_text(query_spec.get("query", search_query), limit=query_spec.get("limit", 5))
 
-        # Step 4: Results Normalization & Spoken Confirmation for Zero-Literacy Workers
+            # Check if this is an aggregation query
+            if intent == "SUMMARY":
+                # Aggregate across active tables
+                tables = self.warehouse_manager.list_tables()
+                if tables:
+                    primary_table = tables[0]["table_name"]
+                    agg_data = self.warehouse_manager.execute_aggregation(primary_table)
+                    total_records = self.sync_engine.total_rows_synced
+                    spoken = f"The dataset currently has {len(tables)} tables with {total_records:,} total records."
+                    res_payload = {
+                        "intent": intent,
+                        "operation": "AGGREGATE",
+                        "data": agg_data,
+                        "spoken_confirmation": spoken,
+                        "kg_cache_hit": False,
+                        "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
+                    }
+                    hot_cache.set(cache_key, res_payload, ttl_seconds=300)
+                    return res_payload
+
+            # Search warehouse via FTS or adapter
+            if search_query:
+                # 1. Search warehouse
+                db_results = self.warehouse_manager.search_text(search_query, limit=5)
+                # 2. If no hits in warehouse, try primary adapter
+                if not db_results:
+                    adapter = self.registry.get_primary()
+                    if adapter:
+                        db_results = adapter.search_by_text(search_query, limit=5)
+
+        # Step 4: Universal Dynamic Field Extraction & Spoken Answer Formulation
+        # ZERO hardcoding: dynamically derives attributes from the actual returned record
         primary_item = db_results[0] if db_results else None
         spoken_response = ""
         structured_context_lines = []
 
         if primary_item:
-            # Extract common display fields dynamically
-            name_val = primary_item.get("canonical_name") or primary_item.get("name") or primary_item.get("product_name") or primary_item.get("item_id")
-            qty_val = primary_item.get("quantity") or primary_item.get("stock") or primary_item.get("qty")
-            unit_val = primary_item.get("unit_of_measure") or primary_item.get("uom") or primary_item.get("unit") or "units"
-            price_val = primary_item.get("unit_price") or primary_item.get("price") or primary_item.get("mrp") or primary_item.get("rate")
-            brand_val = primary_item.get("brand") or primary_item.get("company")
-            cat_val = primary_item.get("category") or primary_item.get("section")
-            loc_val = primary_item.get("bin_location") or primary_item.get("location") or primary_item.get("shelf")
+            # Dynamically identify primary identifier / name column
+            ident_keys = [k for k in primary_item.keys() if any(sub in k.lower() for sub in ["name", "title", "label", "sku", "code", "tag", "id"])]
+            primary_key_col = ident_keys[0] if ident_keys else list(primary_item.keys())[0]
+            primary_label = str(primary_item.get(primary_key_col, "Record"))
 
-            parts = []
-            if name_val:
-                parts.append(f"{name_val}")
-            if qty_val is not None:
-                parts.append(f"Stock: {qty_val} {unit_val}")
-            if price_val is not None:
-                parts.append(f"Price: ₹{price_val}")
-            if loc_val:
-                parts.append(f"Location: {loc_val}")
+            # Build readable attributes list with prioritized key fields
+            priority_cols = []
+            other_cols = []
+            uom = primary_item.get("unit_of_measure") or primary_item.get("unit") or ""
 
-            structured_context_lines.append(f"[Verified Inventory Fact]: {', '.join(parts)}")
+            for col, val in primary_item.items():
+                if col.startswith("_") or col == primary_key_col or val is None or str(val).strip() == "":
+                    continue
+                col_lower = col.lower()
+                col_display = col.replace("_", " ").title()
 
-            # Formulate spoken confirm-back
-            if intent == "PRICE" and price_val is not None:
-                spoken_response = f"{name_val} ka bhav ₹{price_val} rupaye hai."
-            elif intent == "QUANTITY" and qty_val is not None:
-                spoken_response = f"{name_val}: {qty_val} {unit_val} bacha hai."
+                if col_lower in ["quantity", "stock", "qty"]:
+                    entry = f"Stock: {val} {uom}".strip() if uom else f"Stock: {val}"
+                    priority_cols.insert(0, entry)
+                elif col_lower in ["unit_price", "retail_price", "price", "mrp", "rate", "cost_price", "cost"]:
+                    priority_cols.append(f"{col_display}: {val}")
+                elif any(sig in col_lower for sig in ["status", "tier", "ward", "origin", "destination", "brand", "category"]):
+                    priority_cols.append(f"{col_display}: {val}")
+                else:
+                    other_cols.append(f"{col_display}: {val}")
+
+            all_attrs = priority_cols + other_cols
+            structured_context_lines.append(f"[Verified Data Record ({primary_label})]: {', '.join(all_attrs[:12])}")
+
+            # Universal spoken confirmation
+            top_attrs = all_attrs[:3]
+            if top_attrs:
+                spoken_response = f"{primary_label}: {', '.join(top_attrs)}."
             else:
-                spoken_response = f"{name_val}: Stock {qty_val if qty_val is not None else 'N/A'} {unit_val}, bhav ₹{price_val if price_val is not None else 'N/A'}."
+                spoken_response = f"Found record for {primary_label}."
 
-            # Step 5: Learn & Write Back (Update KG Cache with resolved entity)
-            item_id_val = primary_item.get("item_id") or primary_item.get("id") or str(name_val)
-            if self.context_store and item_id_val and search_query:
+            # Step 5: Dynamic Learn & Write Back to KG Cache
+            if self.context_store and search_query:
                 try:
-                    # Write entity resolution link
                     self.context_store.upsert_triple(
                         user_id="kg_cache",
                         subject=search_query.lower(),
                         predicate="resolved_to_canonical_id",
-                        object_val=str(item_id_val),
+                        object_val=primary_label,
                         confidence=0.98
                     )
-                    # Cache static name and category
-                    if name_val and cat_val:
-                        self.context_store.upsert_triple(
-                            user_id="kg_cache",
-                            subject=str(name_val),
-                            predicate="belongs_to_category",
-                            object_val=str(cat_val),
-                            confidence=1.0
-                        )
-                    if brand_val and name_val:
-                        self.context_store.upsert_triple(
-                            user_id="kg_cache",
-                            subject=str(name_val),
-                            predicate="has_brand",
-                            object_val=str(brand_val),
-                            confidence=1.0
-                        )
                 except Exception as e:
                     logger.debug(f"Error writing back to KG cache: {e}")
         else:
-            spoken_response = f"Yeh item inventory record me nahi mila."
-            structured_context_lines.append(f"[Inventory Notice]: No matching records found for '{search_query}'.")
+            spoken_response = f"No matching records found for '{search_query}' in the synchronized dataset."
+            structured_context_lines.append(f"[Data Notice]: No matching records found for '{search_query}'.")
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
-        return {
+        result_payload = {
             "intent": intent,
             "search_query": search_query,
             "kg_cache_hit": kg_cache_hit,
+            "hot_cache_hit": False,
             "matched_item": primary_item,
             "all_results": db_results,
             "context_string": "\n".join(structured_context_lines),
             "spoken_confirmation": spoken_response,
             "elapsed_ms": elapsed_ms
         }
+
+        # Cache entity in Hot Cache only if valid item was resolved
+        if search_query and primary_item:
+            hot_cache.set_entity(search_query, primary_item)
+            query_cache_key = f"smart_query:{user_text.strip().lower()}"
+            hot_cache.set(query_cache_key, result_payload, ttl_seconds=300)
+
+        return result_payload
+
+    async def process_query_async(self, user_text: str, user_id: str = "default_user") -> Dict[str, Any]:
+        """
+        Non-blocking async query pipeline.
+        Dispatches all DB lookups to worker threads so the Voice AI loop / audio stream
+        never experiences jitter or stalls.
+        """
+        return await asyncio.to_thread(self.process_query, user_text, user_id)

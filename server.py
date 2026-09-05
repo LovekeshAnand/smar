@@ -189,8 +189,8 @@ async def process_chat(req: ChatRequest):
 
     user_id = req.user_id or "default_user"
 
-    # 1. Query Smart Data Layer (100k+ warehouse data + KG cache lookup)
-    smart_res = smart_data_engine.process_query(user_text, user_id=user_id)
+    # 1. Query Smart Data Layer asynchronously (non-blocking over 1M+ rows & KG cache)
+    smart_res = await smart_data_engine.process_query_async(user_text, user_id=user_id)
     inventory_context = smart_res.get("context_string")
 
     # 2. Ingest turn, run hybrid retrieval, compose dynamic prompt
@@ -360,32 +360,92 @@ async def process_voice(
     }
 
 
-# --- Inventory & Multi-Source Endpoints ---
+# --- Universal Data Layer & Sync Endpoints ---
+@app.get("/api/data/status")
 @app.get("/api/inventory/status")
-async def get_inventory_status():
-    """Returns status of active primary adapter and all registered sources."""
+async def get_universal_data_status():
+    """Returns readiness status, table inventory, row counts, and cache engine."""
+    sync_status = smart_data_engine.get_sync_status()
     primary = adapter_registry.get_primary()
     return {
-        "primary_source": primary.get_source_name(),
-        "source_type": primary.get_source_type(),
-        "total_records": primary.get_total_count(),
-        "adapters": adapter_registry.list_adapters(),
+        "status": sync_status.get("status", "ready_to_answer"),
+        "ready_to_answer": sync_status.get("ready_to_answer", True),
+        "message": sync_status.get("message"),
+        "total_records": sync_status.get("total_rows", 0) or (primary.get_total_count() if primary else 0),
+        "tables_count": sync_status.get("tables_count", 0),
+        "tables": sync_status.get("tables", []),
+        "schema_triples_in_kg": sync_status.get("schema_triples_in_kg", 0),
+        "cache_engine": sync_status.get("cache_engine", "in_memory_lru"),
+        "is_redis": sync_status.get("is_redis", False),
         "cache_hits": smart_data_engine.cache_hits,
-        "cache_misses": smart_data_engine.cache_misses
+        "cache_misses": smart_data_engine.cache_misses,
+        "primary_source": primary.get_source_name() if primary else "warehouse.db"
     }
+
+
+@app.post("/api/data/upload")
+async def upload_multiple_data_files(files: List[UploadFile] = File(...)):
+    """
+    Accepts arbitrary, unexpected uploaded files (CSV, Excel, SQLite),
+    saves them, and runs the Universal Data Sync Engine to index and sync to KG.
+    """
+    import shutil
+    uploads_dir = Path("data/uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    saved_paths = []
+
+    for f in files:
+        target_path = uploads_dir / f.filename
+        with open(target_path, "wb") as buffer:
+            shutil.copyfileobj(f.file, buffer)
+        saved_paths.append(str(target_path))
+
+    # Run non-blocking sync pipeline
+    result = await smart_data_engine.sync_files_async(saved_paths)
+    return result
+
+
+@app.post("/api/data/sync")
+async def trigger_data_sync():
+    """
+    Manually triggers the Universal Data Sync Engine over all files in data/uploads/ and data/.
+    Introspects schema, indexes, writes triples to KG, and sets ready_to_answer = True.
+    """
+    target_files = []
+    # Collect files from data/uploads and sample files from data/
+    for folder in ["data/uploads", "data"]:
+        p = Path(folder)
+        if p.exists():
+            for f in p.iterdir():
+                if f.is_file() and f.suffix.lower() in [".csv", ".xlsx", ".xls"] and not f.name.startswith("test_"):
+                    target_files.append(str(f))
+
+    if not target_files:
+        # Check warehouse.db
+        wh = Path("data/warehouse.db")
+        if wh.exists():
+            target_files.append(str(wh))
+
+    result = await smart_data_engine.sync_files_async(target_files)
+    return result
 
 
 @app.get("/api/inventory/search")
 async def search_inventory(q: str, limit: int = 10):
-    """Direct search query against active inventory source."""
-    primary = adapter_registry.get_primary()
-    results = primary.search_by_text(q, limit=limit)
-    return {"query": q, "count": len(results), "items": results}
+    """Direct search query against active storage engine."""
+    res = await smart_data_engine.process_query_async(q)
+    return {
+        "query": q,
+        "count": len(res.get("all_results", [])),
+        "items": res.get("all_results", []),
+        "spoken_confirmation": res.get("spoken_confirmation"),
+        "elapsed_ms": res.get("elapsed_ms")
+    }
 
 
 @app.post("/api/inventory/load-file")
 async def load_inventory_file(file: UploadFile = File(...)):
-    """Uploads a CSV or Excel file and switches the primary adapter on-the-fly."""
+    """Uploads a CSV or Excel file and indexes it into the system."""
     import shutil
     uploads_dir = Path("data/uploads")
     os.makedirs(uploads_dir, exist_ok=True)
@@ -394,14 +454,14 @@ async def load_inventory_file(file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    adapter = smart_data_engine.load_new_datasource(str(file_path))
+    # Ingest and sync
+    res = await smart_data_engine.sync_files_async([str(file_path)])
     return {
         "success": True,
-        "message": f"Successfully loaded and indexed '{file.filename}'.",
-        "source_name": adapter.get_source_name(),
-        "source_type": adapter.get_source_type(),
-        "total_records": adapter.get_total_count()
+        "message": f"Successfully ingested and indexed '{file.filename}'. Ready to answer!",
+        "sync_status": res
     }
+
 
 
 @app.websocket("/ws/live")

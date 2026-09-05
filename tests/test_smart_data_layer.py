@@ -48,10 +48,14 @@ class TestSmartDataLayer(unittest.TestCase):
         self.registry = AdapterRegistry()
         self.registry.register("primary", self.adapter, set_as_primary=True)
 
+        from structured_data.multi_table_manager import MultiTableWarehouseManager
+        self.wh_mgr = MultiTableWarehouseManager(db_path=os.path.join(self.temp_dir, "test_wh.db"))
+
         # Smart Data Layer
         self.smart_engine = SmartDataLayerEngine(
             adapter_registry=self.registry,
-            context_store=self.context_engine.store
+            context_store=self.context_engine.store,
+            warehouse_manager=self.wh_mgr
         )
 
     def test_dynamic_dictionary_learning(self):
