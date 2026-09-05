@@ -17,13 +17,24 @@ export interface VectorMemory {
   updated_at: number;
 }
 
+export interface InventoryStatus {
+  primary_source: string;
+  source_type: string;
+  total_records: number;
+  cache_hits: number;
+  cache_misses: number;
+}
+
 interface MemoryInspectorProps {
   isOpen: boolean;
   onClose: () => void;
   triples: KGTriple[];
   vectors: VectorMemory[];
+  inventoryStatus?: InventoryStatus | null;
   onRefreshGraph: () => void;
   onRefreshVectors: () => void;
+  onRefreshInventory?: () => void;
+  onUploadFile?: (file: File) => void;
 }
 
 export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
@@ -31,12 +42,27 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
   onClose,
   triples,
   vectors,
+  inventoryStatus,
   onRefreshGraph,
   onRefreshVectors,
+  onRefreshInventory,
+  onUploadFile,
 }) => {
-  const [activeTab, setActiveTab] = useState<"kg" | "vectors">("kg");
+  const [activeTab, setActiveTab] = useState<"kg" | "vectors" | "data">("kg");
+  const [isUploading, setIsUploading] = useState(false);
 
   if (!isOpen) return null;
+
+  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0] && onUploadFile) {
+      setIsUploading(true);
+      try {
+        await onUploadFile(e.target.files[0]);
+      } finally {
+        setIsUploading(false);
+      }
+    }
+  };
 
   return (
     <div className="fixed inset-y-0 right-0 w-full sm:w-96 bg-slate-950/95 backdrop-blur-2xl border-l border-white/10 z-40 flex flex-col shadow-2xl animate-in slide-in-from-right duration-300">
@@ -78,6 +104,14 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
         >
           Vectors ({vectors.length})
         </button>
+        <button
+          onClick={() => setActiveTab("data")}
+          className={`px-3 py-1 rounded-md text-xs font-mono transition-all ${
+            activeTab === "data" ? "bg-white/15 text-white" : "text-slate-500 hover:text-slate-300"
+          }`}
+        >
+          Data Layer
+        </button>
       </div>
 
       {/* Content */}
@@ -85,7 +119,7 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
         {activeTab === "kg" && (
           <div className="space-y-2">
             <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono pb-1">
-              <span>Relational Triples</span>
+              <span>Relational Triples & Schema</span>
               <button onClick={onRefreshGraph} className="hover:text-slate-300">
                 Refresh
               </button>
@@ -124,6 +158,62 @@ export const MemoryInspector: React.FC<MemoryInspectorProps> = ({
                 </div>
               ))
             )}
+          </div>
+        )}
+
+        {activeTab === "data" && (
+          <div className="space-y-3">
+            <div className="flex justify-between items-center text-[11px] text-slate-500 font-mono pb-1">
+              <span>Connected Data Source</span>
+              {onRefreshInventory && (
+                <button onClick={onRefreshInventory} className="hover:text-slate-300">
+                  Refresh
+                </button>
+              )}
+            </div>
+
+            {inventoryStatus && (
+              <div className="p-3 rounded-lg bg-white/[0.03] border border-white/10 space-y-2 font-mono">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Active Source:</span>
+                  <span className="text-cyan-400 font-semibold truncate max-w-[180px]">
+                    {inventoryStatus.primary_source}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Total Records:</span>
+                  <span className="text-emerald-400 font-bold">
+                    {inventoryStatus.total_records.toLocaleString()} rows
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">KG Cache Hits / Misses:</span>
+                  <span className="text-purple-300">
+                    {inventoryStatus.cache_hits} / {inventoryStatus.cache_misses}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Universal File Ingestion Dropzone */}
+            <div className="p-3.5 rounded-lg border border-dashed border-white/20 bg-white/[0.01] hover:border-cyan-500/50 transition-colors text-center space-y-2">
+              <span className="text-slate-300 font-medium block">Adapt to Any CSV / Excel</span>
+              <p className="text-[10px] text-slate-500 leading-normal">
+                Upload any warehouse or inventory spreadsheet to auto-index and introspect schema on-the-fly.
+              </p>
+              <label className="inline-block mt-1 cursor-pointer">
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={handleFileInput}
+                  disabled={isUploading}
+                  className="hidden"
+                />
+                <span className="px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 text-[11px] font-mono text-cyan-300 transition-colors inline-block">
+                  {isUploading ? "Indexing..." : "Select CSV / Excel File"}
+                </span>
+              </label>
+            </div>
           </div>
         )}
       </div>

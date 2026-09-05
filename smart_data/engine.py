@@ -90,28 +90,18 @@ class SmartDataLayerEngine:
 
         if self.context_store and search_query:
             try:
-                # Look for resolution triple in KG
-                res_triples = self.context_store.get_triples(
-                    user_id=user_id,
-                    subject=search_query.lower()
+                # Query KG cache for entity resolution links
+                candidates = [search_query.lower()]
+                res_triples = self.context_store.query_triples_for_entities(
+                    user_id="kg_cache",
+                    entities=candidates,
+                    limit=10
                 )
                 for t in res_triples:
                     if t.get("predicate") == "resolved_to_canonical_id":
                         resolved_item_id = t.get("object")
                         kg_cache_hit = True
                         break
-
-                # Also check system cache
-                if not resolved_item_id:
-                    sys_triples = self.context_store.get_triples(
-                        user_id="kg_cache",
-                        subject=search_query.lower()
-                    )
-                    for t in sys_triples:
-                        if t.get("predicate") == "resolved_to_canonical_id":
-                            resolved_item_id = t.get("object")
-                            kg_cache_hit = True
-                            break
             except Exception as e:
                 logger.debug(f"KG cache lookup error: {e}")
 

@@ -38,6 +38,8 @@ from voice.gnani_stt import GnaniSTT
 from voice.gnani_tts import GnaniTTS
 from memory.context_manager import ContextManager
 from context_layer import ContextLayerEngine, ContextConfig
+from structured_data.adapters import AdapterRegistry, SQLiteStorageAdapter
+from smart_data import SmartDataLayerEngine
 
 app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
 
@@ -57,6 +59,15 @@ context_mgr = ContextManager()
 stt_client = GnaniSTT(language_code=os.getenv("GNANI_LANGUAGE_CODE", "hi-IN"))
 tts_client = GnaniTTS(voice=os.getenv("GNANI_VOICE_NAME", "Nalini"))
 epsilon_bridge = EpsilonBridge()
+
+# Initialize Smart Data Layer & Multi-Source Storage Adapters
+adapter_registry = AdapterRegistry()
+primary_adapter = SQLiteStorageAdapter()  # smar_inventory.db with 100,000+ items
+adapter_registry.register("primary_sqlite", primary_adapter, set_as_primary=True)
+smart_data_engine = SmartDataLayerEngine(
+    adapter_registry=adapter_registry,
+    context_store=context_engine.store
+)
 
 # Active WebSocket clients
 connected_clients: List[WebSocket] = []
@@ -93,6 +104,14 @@ async def get_system_status():
             "status": "active",
             "has_graph": len(triples_summary) >= 0,
             "has_vectors": len(vectors_summary) >= 0
+        },
+        "smart_data_layer": {
+            "status": "active",
+            "source_name": adapter_registry.get_primary().get_source_name(),
+            "source_type": adapter_registry.get_primary().get_source_type(),
+            "total_records": adapter_registry.get_primary().get_total_count(),
+            "kg_cache_hits": smart_data_engine.cache_hits,
+            "kg_cache_misses": smart_data_engine.cache_misses
         }
     }
 
@@ -170,7 +189,11 @@ async def process_chat(req: ChatRequest):
 
     user_id = req.user_id or "default_user"
 
-    # 1. Ingest turn, run hybrid retrieval, compose dynamic prompt
+    # 1. Query Smart Data Layer (100k+ warehouse data + KG cache lookup)
+    smart_res = smart_data_engine.process_query(user_text, user_id=user_id)
+    inventory_context = smart_res.get("context_string")
+
+    # 2. Ingest turn, run hybrid retrieval, compose dynamic prompt
     turn_result = context_engine.process_user_turn(
         user_id=user_id,
         user_text=user_text,
@@ -182,10 +205,12 @@ async def process_chat(req: ChatRequest):
     semantic_memories = retrieval.get("semantic_memories", [])
     recent_turns = turn_result.get("recent_turns", [])
 
-    # Assemble rich context from structured graph facts and semantic memory recall
+    # Assemble rich context: database grounded inventory facts + personal user memory
     context_blocks = []
+    if inventory_context:
+        context_blocks.append(inventory_context)
     if structured_facts:
-        context_blocks.append("[Verified Facts]:\n" + "\n".join(f"- {f}" for f in structured_facts))
+        context_blocks.append("[Personal User Knowledge]:\n" + "\n".join(f"- {f}" for f in structured_facts))
     if semantic_memories:
         context_blocks.append("[Recalled Past Notes & Context]:\n" + "\n".join(f"- {m}" for m in semantic_memories))
     context_summary = "\n\n".join(context_blocks) if context_blocks else None
@@ -264,7 +289,14 @@ async def process_chat(req: ChatRequest):
         "context_used": context_summary or "None",
         "retrieval": retrieval,
         "extracted_facts": turn_result.get("extracted_facts", []),
-        "audio_base64": audio_b64
+        "audio_base64": audio_b64,
+        "smart_data": {
+            "intent": smart_res.get("intent"),
+            "kg_cache_hit": smart_res.get("kg_cache_hit"),
+            "matched_item": smart_res.get("matched_item"),
+            "spoken_confirmation": smart_res.get("spoken_confirmation"),
+            "elapsed_ms": smart_res.get("elapsed_ms")
+        }
     }
 
 
@@ -323,7 +355,52 @@ async def process_voice(
         "context_used": chat_resp["context_used"],
         "retrieval": chat_resp.get("retrieval"),
         "extracted_facts": chat_resp.get("extracted_facts"),
-        "audio_base64": chat_resp["audio_base64"]
+        "audio_base64": chat_resp["audio_base64"],
+        "smart_data": chat_resp.get("smart_data")
+    }
+
+
+# --- Inventory & Multi-Source Endpoints ---
+@app.get("/api/inventory/status")
+async def get_inventory_status():
+    """Returns status of active primary adapter and all registered sources."""
+    primary = adapter_registry.get_primary()
+    return {
+        "primary_source": primary.get_source_name(),
+        "source_type": primary.get_source_type(),
+        "total_records": primary.get_total_count(),
+        "adapters": adapter_registry.list_adapters(),
+        "cache_hits": smart_data_engine.cache_hits,
+        "cache_misses": smart_data_engine.cache_misses
+    }
+
+
+@app.get("/api/inventory/search")
+async def search_inventory(q: str, limit: int = 10):
+    """Direct search query against active inventory source."""
+    primary = adapter_registry.get_primary()
+    results = primary.search_by_text(q, limit=limit)
+    return {"query": q, "count": len(results), "items": results}
+
+
+@app.post("/api/inventory/load-file")
+async def load_inventory_file(file: UploadFile = File(...)):
+    """Uploads a CSV or Excel file and switches the primary adapter on-the-fly."""
+    import shutil
+    uploads_dir = Path("data/uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    file_path = uploads_dir / file.filename
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    adapter = smart_data_engine.load_new_datasource(str(file_path))
+    return {
+        "success": True,
+        "message": f"Successfully loaded and indexed '{file.filename}'.",
+        "source_name": adapter.get_source_name(),
+        "source_type": adapter.get_source_type(),
+        "total_records": adapter.get_total_count()
     }
 
 

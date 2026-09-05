@@ -11,6 +11,7 @@ import {
   MemoryInspector,
   KGTriple,
   VectorMemory,
+  InventoryStatus,
 } from "@/components/MemoryInspector";
 import { VoiceController } from "@/components/VoiceController";
 import { encodeWAV } from "@/lib/audio";
@@ -30,6 +31,7 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [triples, setTriples] = useState<KGTriple[]>([]);
   const [vectors, setVectors] = useState<VectorMemory[]>([]);
+  const [inventoryStatus, setInventoryStatus] = useState<InventoryStatus | null>(null);
   const [isMemoryOpen, setIsMemoryOpen] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(true);
   const [language, setLanguage] = useState<string>("en-IN");
@@ -48,6 +50,7 @@ export default function Home() {
     fetchSystemStatus();
     fetchMemoryGraph();
     fetchMemoryVectors();
+    fetchInventoryStatus();
 
     // Setup live WebSocket for automatic real-time memory updates
     let ws: WebSocket | null = null;
@@ -118,6 +121,35 @@ export default function Home() {
     }
   };
 
+
+  const fetchInventoryStatus = async () => {
+    try {
+      const res = await fetch("/api/inventory/status");
+      if (!res.ok) return;
+      const data = await res.json();
+      setInventoryStatus(data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleUploadFile = async (file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/inventory/load-file", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      await fetchInventoryStatus();
+      await fetchMemoryGraph();
+      await fetchMemoryVectors();
+    } catch (e) {
+      console.error("Error uploading inventory file:", e);
+      alert("Failed to load and index file.");
+    }
+  };
 
   const toggleMicrophone = async () => {
     if (isRecording) {
@@ -376,8 +408,11 @@ export default function Home() {
         onClose={() => setIsMemoryOpen(false)}
         triples={triples}
         vectors={vectors}
+        inventoryStatus={inventoryStatus}
         onRefreshGraph={fetchMemoryGraph}
         onRefreshVectors={fetchMemoryVectors}
+        onRefreshInventory={fetchInventoryStatus}
+        onUploadFile={handleUploadFile}
       />
 
       {/* Hidden audio element for speech playback */}
