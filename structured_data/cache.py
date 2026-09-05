@@ -65,9 +65,6 @@ class HotDataCacheManager:
     def get_key_full_item(self, item_id: str) -> str:
         return self._generate_key("item:full", item_id)
 
-    def get_key_volatile_item(self, item_id: str) -> str:
-        return self._generate_key("item:volatile", item_id)
-
     def get_key_barcode(self, barcode: str) -> str:
         return self._generate_key("barcode", barcode)
 
@@ -140,7 +137,6 @@ class HotDataCacheManager:
         """Invalidate all cache entries associated with an inventory item."""
         self.invalidate(self.get_key_static_item(item_id))
         self.invalidate(self.get_key_full_item(item_id))
-        self.invalidate(self.get_key_volatile_item(item_id))
         if barcode:
             self.invalidate(self.get_key_barcode(barcode))
         if category:
