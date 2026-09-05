@@ -32,20 +32,46 @@ class StructuredDataService:
         self.read_models = read_model_manager or ReadModelManager(db_manager=self.db)
         self.cache = cache_manager or HotDataCacheManager()
 
+    STATIC_FIELDS = {
+        "item_id", "barcode", "canonical_name", "normalized_name",
+        "category", "brand", "unit_of_measure", "hsn_code", "created_at"
+    }
+
+    VOLATILE_FIELDS = {
+        "quantity", "unit_price", "cost_price", "reorder_level",
+        "is_active", "updated_at"
+    }
+
     # --- ITEM LOOKUP (CACHE-ASIDE STRATEGY) ---
-    def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
+    def get_item(self, item_id: str, force_live_stock: bool = False) -> Optional[Dict[str, Any]]:
         """
         Retrieve inventory item details by Primary Key item_id.
         
         Cache-Aside Flow:
-            1. Cache lookup (`smar:item:full:{item_id}`)
-            2. On HIT -> return cached data
-            3. On MISS -> query Primary Database
-            4. Populate Cache with volatile TTL policy
-            5. Return result
+            1. If force_live_stock is True:
+               - Fetches cached static attributes (1h TTL)
+               - Directly queries Primary DB for real-time quantity/price (0 stale risk)
+               - Combines both dictionaries.
+            2. If force_live_stock is False:
+               - Cache lookup (`smar:item:full:{item_id}`)
+               - On HIT -> return cached data
+               - On MISS -> query Primary Database (Source of Truth)
+               - Populate Cache with volatile TTL policy (15s)
+               - Return result
         """
         if not item_id:
             return None
+
+        if force_live_stock:
+            static_data = self.get_item_static(item_id)
+            if not static_data:
+                return None
+            volatile_data = self.get_item_volatile(item_id, use_cache=False)
+            if not volatile_data:
+                return None
+            combined = dict(static_data)
+            combined.update(volatile_data)
+            return combined
 
         key = self.cache.get_key_full_item(item_id)
         cached = self.cache.get(key)
@@ -58,6 +84,59 @@ class StructuredDataService:
             self.cache.set(key, item, ttl_seconds=HotDataCacheManager.TTL_VOLATILE_ITEM)
 
         return item
+
+    def get_item_static(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve only static immutable item metadata (name, category, brand, UOM, HSN).
+        Safe for long-duration caching (3,600 sec / 1 Hour TTL).
+        """
+        if not item_id:
+            return None
+
+        key = self.cache.get_key_static_item(item_id)
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+
+        # Cache MISS: Query Primary DB
+        item = self.db.get_item_by_id(item_id)
+        if not item:
+            return None
+
+        static_dict = {k: v for k, v in item.items() if k in self.STATIC_FIELDS}
+        self.cache.set(key, static_dict, ttl_seconds=HotDataCacheManager.TTL_STATIC_ITEM)
+        return static_dict
+
+    def get_item_volatile(self, item_id: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve volatile stateful item fields (quantity, unit_price, cost_price, reorder_level).
+        Uses short TTL (15 sec) or direct DB bypass to prevent serving stale stock.
+        """
+        if not item_id:
+            return None
+
+        key = self.cache.get_key_volatile_item(item_id)
+        if use_cache:
+            cached = self.cache.get(key)
+            if cached is not None:
+                return cached
+
+        # Query Primary DB directly
+        item = self.db.get_item_by_id(item_id)
+        if not item:
+            return None
+
+        volatile_dict = {k: v for k, v in item.items() if k in self.VOLATILE_FIELDS}
+        if use_cache:
+            self.cache.set(key, volatile_dict, ttl_seconds=HotDataCacheManager.TTL_VOLATILE_ITEM)
+        return volatile_dict
+
+    def get_current_inventory_info(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Convenience service method for voice assistant queries:
+        Retrieves real-time stock quantity, selling price, and reorder status.
+        """
+        return self.get_item(item_id, force_live_stock=True)
 
     def get_item_by_barcode(self, barcode: str) -> Optional[Dict[str, Any]]:
         """
@@ -105,6 +184,12 @@ class StructuredDataService:
 
         return summary
 
+    def get_all_category_summaries(self) -> List[Dict[str, Any]]:
+        """
+        Retrieve all category summaries from the Materialized View.
+        """
+        return self.read_models.get_all_category_summaries()
+
     def get_low_stock_alerts(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Retrieve prioritized reorder alert items from Materialized Read Model.
@@ -120,6 +205,19 @@ class StructuredDataService:
             self.cache.set(key, alerts, ttl_seconds=HotDataCacheManager.TTL_LOW_STOCK_LIST)
 
         return alerts
+
+    # --- CACHE INTERFACES FOR SMART DATA LAYER ---
+    def cache_lookup(self, key: str) -> Optional[Any]:
+        """Direct cache lookup interface."""
+        return self.cache.get(key)
+
+    def cache_populate(self, key: str, value: Any, ttl_seconds: float) -> None:
+        """Direct cache populate interface."""
+        self.cache.set(key, value, ttl_seconds=ttl_seconds)
+
+    def invalidate_item(self, item_id: str, barcode: Optional[str] = None, category: Optional[str] = None) -> None:
+        """Invalidates all cached entries for an item."""
+        self.cache.invalidate_item(item_id=item_id, barcode=barcode, category=category)
 
     # --- MUTATION & IMMEDIATE CACHE INVALIDATION ---
     def update_item_stock_or_price(

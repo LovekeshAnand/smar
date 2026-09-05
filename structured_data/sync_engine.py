@@ -19,7 +19,10 @@ import time
 import logging
 import asyncio
 from typing import Dict, Any, List, Optional
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 from structured_data.multi_table_manager import MultiTableWarehouseManager
 from structured_data.schema_introspector import SchemaIntrospector
