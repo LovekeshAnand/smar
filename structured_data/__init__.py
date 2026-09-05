@@ -9,6 +9,9 @@ from .models import InventoryItem, ValidationResult, ETLBatchResult
 from .db import InventoryDatabaseManager
 from .etl import InventoryETLPipeline
 from .generator import KiranaInventoryDataGenerator
+from .read_models import ReadModelManager
+from .cache import HotDataCacheManager
+from .service import StructuredDataService
 
 __all__ = [
     "InventoryItem",
@@ -17,4 +20,7 @@ __all__ = [
     "InventoryDatabaseManager",
     "InventoryETLPipeline",
     "KiranaInventoryDataGenerator",
+    "ReadModelManager",
+    "HotDataCacheManager",
+    "StructuredDataService",
 ]
