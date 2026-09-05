@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { UserProfile } from "./UserAuthModal";
 
 interface HeaderProps {
   onToggleMemory: () => void;
@@ -8,6 +9,10 @@ interface HeaderProps {
   isConnected: boolean;
   language: string;
   onToggleLanguage: () => void;
+  currentUser: UserProfile;
+  onOpenUserModal: () => void;
+  onToggleDataUpload: () => void;
+  isDataReady?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,31 +21,69 @@ export const Header: React.FC<HeaderProps> = ({
   isConnected,
   language,
   onToggleLanguage,
+  currentUser,
+  onOpenUserModal,
+  onToggleDataUpload,
+  isDataReady = true,
 }) => {
   return (
-    <header className="h-14 px-6 flex items-center justify-between border-b border-white/5 bg-transparent backdrop-blur-sm z-30">
-      {/* Minimal Brand */}
-      <div className="flex items-center gap-2.5">
-        <span
-          className={`w-2 h-2 rounded-full ${
-            isConnected ? "bg-cyan-400 shadow-[0_0_8px_#00f0ff]" : "bg-slate-600"
-          }`}
-        />
-        <span className="font-sans font-semibold tracking-wider text-sm text-slate-200 lowercase">
-          smar
-        </span>
+    <header className="h-14 px-6 flex items-center justify-between border-b border-white/5 bg-slate-950/60 backdrop-blur-md z-30">
+      {/* Brand & Connection Status */}
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span
+            className={`w-2 h-2 rounded-full ${
+              isConnected ? "bg-cyan-400 shadow-[0_0_8px_#00f0ff]" : "bg-slate-600"
+            }`}
+          />
+          <span className="font-sans font-semibold tracking-wider text-sm text-slate-200 lowercase">
+            smar
+          </span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/5">
+            v2.2
+          </span>
+        </div>
+
+        {/* Data Layer Quick Access */}
+        <button
+          onClick={onToggleDataUpload}
+          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/20 transition-colors"
+          title="Open Data Ingestion & Warehouse Inspector"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${isDataReady ? "bg-emerald-400" : "bg-amber-400 animate-pulse"}`} />
+          <span>Surprise Data Sync</span>
+        </button>
       </div>
 
-      {/* Right Actions: Minimal language toggle & memory drawer toggle */}
-      <div className="flex items-center gap-2">
+      {/* Right Actions: User Badge, Language toggle & Memory drawer toggle */}
+      <div className="flex items-center gap-2.5">
+        {/* User Profile Chip */}
+        <button
+          onClick={onOpenUserModal}
+          className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-mono text-slate-200 transition-all shadow-sm group"
+          title={`Logged in as ${currentUser.name} (@${currentUser.username}). Click to manage users.`}
+        >
+          <span className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 font-bold flex items-center justify-center text-[10px] border border-cyan-500/30">
+            {currentUser.username[0]?.toUpperCase() || "L"}
+          </span>
+          <span className="font-semibold text-[11px] text-white group-hover:text-cyan-300 transition-colors">
+            {currentUser.username}
+          </span>
+          <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 uppercase">
+            {currentUser.role}
+          </span>
+        </button>
+
+        {/* Language Toggle */}
         <button
           onClick={onToggleLanguage}
-          className="px-2.5 py-0.5 rounded-full text-[11px] font-mono text-cyan-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+          className="px-2.5 py-1 rounded-full text-[11px] font-mono text-cyan-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
           title={`Language: ${language === "en-IN" ? "English" : "Hindi"}. Click to toggle.`}
         >
           {language === "en-IN" ? "EN" : "HI"}
         </button>
 
+        {/* Memory Drawer Toggle */}
         <button
           onClick={onToggleMemory}
           className={`px-3 py-1 rounded-full text-xs font-mono transition-all flex items-center gap-1.5 ${

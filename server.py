@@ -40,6 +40,7 @@ from memory.context_manager import ContextManager
 from context_layer import ContextLayerEngine, ContextConfig
 from structured_data.adapters import AdapterRegistry, SQLiteStorageAdapter
 from smart_data import SmartDataLayerEngine
+from auth import user_manager
 
 app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
 
@@ -53,10 +54,10 @@ app.add_middleware(
 )
 
 # Initialize singletons
-context_config = ContextConfig()
-context_engine = ContextLayerEngine(context_config)
+context_config = ContextConfig(default_user_id="lovekesh")
+context_engine = ContextLayerEngine(config=context_config)
 context_mgr = ContextManager()
-stt_client = GnaniSTT(language_code=os.getenv("GNANI_LANGUAGE_CODE", "hi-IN"))
+stt_client = GnaniSTT()
 tts_client = GnaniTTS(voice=os.getenv("GNANI_VOICE_NAME", "Nalini"))
 epsilon_bridge = EpsilonBridge()
 
@@ -73,11 +74,68 @@ smart_data_engine = SmartDataLayerEngine(
 connected_clients: List[WebSocket] = []
 
 
+# --- Multi-User Authentication Models & Endpoints ---
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    name: Optional[str] = None
+    role: Optional[str] = "user"
+
+
+@app.post("/api/auth/login")
+async def login_user(req: LoginRequest):
+    """Authenticate user with username and password."""
+    res = user_manager.authenticate(req.username, req.password)
+    if not res:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    return res
+
+
+@app.post("/api/auth/register")
+async def register_user(req: RegisterRequest):
+    """Register a new user in the multi-user system."""
+    try:
+        res = user_manager.register_user(
+            username=req.username,
+            password=req.password,
+            name=req.name,
+            role=req.role or "user"
+        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/auth/me")
+async def get_current_user_profile(token: Optional[str] = None, user_id: Optional[str] = None):
+    """Return active user profile; defaults to lovekesh if session not specified."""
+    if token:
+        u = user_manager.verify_token(token)
+        if u:
+            return {"authenticated": True, "user": u}
+    clean_id = user_id or "lovekesh"
+    u = user_manager.get_user(clean_id)
+    if u:
+        return {"authenticated": True, "user": u}
+    return {"authenticated": False, "user": None}
+
+
+@app.get("/api/auth/users")
+async def list_registered_users():
+    """List all registered users for multi-user switching."""
+    return {"users": user_manager.list_users()}
+
+
 class ChatRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     language: Optional[str] = None
-    user_id: Optional[str] = "default_user"
+    user_id: Optional[str] = "lovekesh"
 
 
 @app.get("/api/status")
@@ -161,7 +219,7 @@ async def get_user_profile(user_id: Optional[str] = None):
 
 class ExplicitMemoryRequest(BaseModel):
     text: str
-    user_id: Optional[str] = "default_user"
+    user_id: Optional[str] = "lovekesh"
     category: Optional[str] = "explicit"
 
 
@@ -169,7 +227,7 @@ class ExplicitMemoryRequest(BaseModel):
 async def add_explicit_memory(req: ExplicitMemoryRequest):
     """Explicitly stores a user note/preference and extracts relational facts."""
     return context_engine.add_explicit_memory(
-        user_id=req.user_id or "default_user",
+        user_id=req.user_id or "lovekesh",
         text=req.text,
         category=req.category or "explicit"
     )
@@ -187,7 +245,7 @@ async def process_chat(req: ChatRequest):
     if not user_text:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
-    user_id = req.user_id or "default_user"
+    user_id = req.user_id or "lovekesh"
 
     # 1. Query Smart Data Layer asynchronously (non-blocking over 1M+ rows & KG cache)
     smart_res = await smart_data_engine.process_query_async(user_text, user_id=user_id)
@@ -304,7 +362,7 @@ async def process_chat(req: ChatRequest):
 async def process_voice(
     audio_file: UploadFile = File(...),
     language: Optional[str] = Form(None),
-    user_id: Optional[str] = Form("default_user")
+    user_id: Optional[str] = Form("lovekesh")
 ):
     """
     Complete end-to-end voice pipeline:
@@ -346,7 +404,7 @@ async def process_voice(
     chat_resp = await process_chat(ChatRequest(
         text=transcription,
         language=lang,
-        user_id=user_id or "default_user"
+        user_id=user_id or "lovekesh"
     ))
 
     return {
@@ -386,7 +444,7 @@ async def get_universal_data_status():
 @app.post("/api/data/upload")
 async def upload_multiple_data_files(files: List[UploadFile] = File(...)):
     """
-    Accepts arbitrary, unexpected uploaded files (CSV, Excel, SQLite),
+    Accepts arbitrary, unexpected uploaded files (CSV, Excel, SQLite, JSON, Parquet),
     saves them, and runs the Universal Data Sync Engine to index and sync to KG.
     """
     import shutil
@@ -402,6 +460,18 @@ async def upload_multiple_data_files(files: List[UploadFile] = File(...)):
 
     # Run non-blocking sync pipeline
     result = await smart_data_engine.sync_files_async(saved_paths)
+
+    # Broadcast update to connected WebSockets
+    for ws in list(connected_clients):
+        try:
+            await ws.send_json({
+                "type": "MEMORY_UPDATED",
+                "event": "DATA_SYNC_COMPLETED",
+                "sync_status": result
+            })
+        except Exception:
+            pass
+
     return result
 
 
@@ -417,16 +487,26 @@ async def trigger_data_sync():
         p = Path(folder)
         if p.exists():
             for f in p.iterdir():
-                if f.is_file() and f.suffix.lower() in [".csv", ".xlsx", ".xls"] and not f.name.startswith("test_"):
+                if f.is_file() and f.suffix.lower() in [".csv", ".xlsx", ".xls", ".json", ".jsonl", ".parquet", ".db", ".sqlite"] and not f.name.startswith("test_"):
                     target_files.append(str(f))
 
     if not target_files:
-        # Check warehouse.db
         wh = Path("data/warehouse.db")
         if wh.exists():
             target_files.append(str(wh))
 
     result = await smart_data_engine.sync_files_async(target_files)
+
+    for ws in list(connected_clients):
+        try:
+            await ws.send_json({
+                "type": "MEMORY_UPDATED",
+                "event": "DATA_SYNC_COMPLETED",
+                "sync_status": result
+            })
+        except Exception:
+            pass
+
     return result
 
 

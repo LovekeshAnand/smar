@@ -129,14 +129,16 @@ class MultiTableWarehouseManager:
             # Temporary speed pragmas during bulk ingest
             conn.execute("PRAGMA synchronous = OFF;")
 
-            if ext == ".csv":
-                reader = pd.read_csv(file_path, chunksize=chunksize, low_memory=False)
+            if ext in [".csv", ".tsv", ".txt"]:
+                sep = "\t" if ext == ".tsv" else None
+                try:
+                    reader = pd.read_csv(file_path, sep=sep, chunksize=chunksize, low_memory=False)
+                except Exception:
+                    reader = pd.read_csv(file_path, chunksize=chunksize, low_memory=False)
                 for i, chunk in enumerate(reader):
-                    # Clean column names
                     chunk.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in chunk.columns]
                     if i == 0:
                         chunk.to_sql(target_table, conn, if_exists="replace", index=False)
-                        # Detect candidate text columns and PK
                         for col, dtype in chunk.dtypes.items():
                             col_str = str(col).lower()
                             dtype_str = str(dtype).lower()
@@ -150,8 +152,8 @@ class MultiTableWarehouseManager:
                     else:
                         chunk.to_sql(target_table, conn, if_exists="append", index=False)
                     total_rows += len(chunk)
+
             elif ext in [".xlsx", ".xls"]:
-                # Load Excel sheets
                 xl = pd.ExcelFile(file_path)
                 for sheet in xl.sheet_names:
                     sheet_table = target_table if len(xl.sheet_names) == 1 else f"{target_table}_{sheet.lower()}"
@@ -170,9 +172,88 @@ class MultiTableWarehouseManager:
                             text_cols.append(col)
                     if pk_col is None and len(df.columns) > 0:
                         pk_col = df.columns[0]
+
+            elif ext == ".json":
+                with open(file_path, "r", encoding="utf-8") as jf:
+                    data = json.load(jf)
+                if isinstance(data, list):
+                    df = pd.DataFrame(data)
+                elif isinstance(data, dict):
+                    # Check if dict wraps list of rows
+                    list_val = next((v for v in data.values() if isinstance(v, list)), None)
+                    if list_val:
+                        df = pd.DataFrame(list_val)
+                    else:
+                        df = pd.DataFrame([data])
+                else:
+                    raise ValueError(f"Invalid JSON data structure in {file_path}")
+                df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
+                df.to_sql(target_table, conn, if_exists="replace", index=False)
+                total_rows = len(df)
+                for col, dtype in df.dtypes.items():
+                    col_str = str(col).lower()
+                    dtype_str = str(dtype).lower()
+                    is_num = "int" in dtype_str or "float" in dtype_str or "bool" in dtype_str
+                    if any(k in col_str for k in ["id", "code", "tag", "num", "key", "pk"]) and pk_col is None:
+                        pk_col = col
+                    if (not is_num) or "name" in col_str or "desc" in col_str or "title" in col_str:
+                        text_cols.append(col)
+                if pk_col is None and len(df.columns) > 0:
+                    pk_col = df.columns[0]
+
+            elif ext in [".jsonl", ".ndjson"]:
+                records = []
+                with open(file_path, "r", encoding="utf-8") as jf:
+                    for line in jf:
+                        if line.strip():
+                            records.append(json.loads(line))
+                df = pd.DataFrame(records)
+                df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
+                df.to_sql(target_table, conn, if_exists="replace", index=False)
+                total_rows = len(df)
+                for col, dtype in df.dtypes.items():
+                    col_str = str(col).lower()
+                    dtype_str = str(dtype).lower()
+                    is_num = "int" in dtype_str or "float" in dtype_str or "bool" in dtype_str
+                    if any(k in col_str for k in ["id", "code", "tag", "num", "key", "pk"]) and pk_col is None:
+                        pk_col = col
+                    if (not is_num) or "name" in col_str or "desc" in col_str or "title" in col_str:
+                        text_cols.append(col)
+                if pk_col is None and len(df.columns) > 0:
+                    pk_col = df.columns[0]
+
+            elif ext == ".parquet":
+                df = pd.read_parquet(file_path)
+                df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
+                df.to_sql(target_table, conn, if_exists="replace", index=False)
+                total_rows = len(df)
+                for col, dtype in df.dtypes.items():
+                    col_str = str(col).lower()
+                    dtype_str = str(dtype).lower()
+                    is_num = "int" in dtype_str or "float" in dtype_str or "bool" in dtype_str
+                    if any(k in col_str for k in ["id", "code", "tag", "num", "key", "pk"]) and pk_col is None:
+                        pk_col = col
+                    if (not is_num) or "name" in col_str or "desc" in col_str or "title" in col_str:
+                        text_cols.append(col)
+                if pk_col is None and len(df.columns) > 0:
+                    pk_col = df.columns[0]
+
             elif ext in [".sqlite", ".db", ".sqlite3"]:
-                # Already SQLite, attach and copy or use directly
-                return {"table": target_table, "status": "native_sqlite", "rows": total_rows}
+                # Ingest tables from external SQLite file into warehouse
+                src_conn = sqlite3.connect(file_path)
+                src_cursor = src_conn.cursor()
+                tbls = src_cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%';"
+                ).fetchall()
+                for (tbl_name,) in tbls:
+                    df = pd.read_sql(f'SELECT * FROM "{tbl_name}"', src_conn)
+                    df.columns = [str(c).strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
+                    dest_tbl = tbl_name.lower().replace(" ", "_").replace("-", "_")
+                    df.to_sql(dest_tbl, conn, if_exists="replace", index=False)
+                    total_rows += len(df)
+                    target_table = dest_tbl
+                src_conn.close()
+
             else:
                 raise ValueError(f"Unsupported file format: {ext}")
 

@@ -13,16 +13,25 @@ import {
   VectorMemory,
   InventoryStatus,
 } from "@/components/MemoryInspector";
+import { UserAuthModal, UserProfile } from "@/components/UserAuthModal";
 import { VoiceController } from "@/components/VoiceController";
 import { encodeWAV } from "@/lib/audio";
 
 export default function Home() {
+  // Pre-authenticated default user: lovekesh / lovekesh123
+  const [currentUser, setCurrentUser] = useState<UserProfile>({
+    username: "lovekesh",
+    name: "Lovekesh",
+    role: "admin",
+  });
+  const [isUserModalOpen, setIsUserModalOpen] = useState<boolean>(false);
+
   // State
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "init-msg",
       role: "assistant",
-      text: "Hello! How can I help you today?",
+      text: "Hello Lovekesh! How can I help you today?",
       timestamp: "Just now",
     },
   ]);
@@ -47,9 +56,22 @@ export default function Home() {
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    // Load stored user or persist lovekesh default
+    try {
+      const saved = localStorage.getItem("smar_user");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.username) setCurrentUser(parsed);
+      } else {
+        localStorage.setItem("smar_user", JSON.stringify(currentUser));
+      }
+    } catch {
+      // ignore storage error
+    }
+
     fetchSystemStatus();
-    fetchMemoryGraph();
-    fetchMemoryVectors();
+    fetchMemoryGraph(currentUser.username);
+    fetchMemoryVectors(currentUser.username);
     fetchInventoryStatus();
 
     // Setup live WebSocket for automatic real-time memory updates
@@ -62,8 +84,9 @@ export default function Home() {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "MEMORY_UPDATED" || msg.type === "MEMORY_SYNCED") {
-            fetchMemoryGraph();
-            fetchMemoryVectors();
+            fetchMemoryGraph(currentUser.username);
+            fetchMemoryVectors(currentUser.username);
+            fetchInventoryStatus();
           }
         } catch {
           // ignore non-json messages
@@ -84,7 +107,7 @@ export default function Home() {
       window.removeEventListener("keydown", handleKeyDown);
       if (ws) ws.close();
     };
-  }, []);
+  }, [currentUser.username]);
 
   const fetchSystemStatus = async () => {
     try {
@@ -99,9 +122,10 @@ export default function Home() {
     }
   };
 
-  const fetchMemoryGraph = async () => {
+  const fetchMemoryGraph = async (uid?: string) => {
     try {
-      const res = await fetch("/api/memory/graph");
+      const targetUid = uid || currentUser.username;
+      const res = await fetch(`/api/memory/graph?user_id=${encodeURIComponent(targetUid)}`);
       if (!res.ok) return;
       const data = await res.json();
       setTriples(data.triples || []);
@@ -110,9 +134,10 @@ export default function Home() {
     }
   };
 
-  const fetchMemoryVectors = async () => {
+  const fetchMemoryVectors = async (uid?: string) => {
     try {
-      const res = await fetch("/api/memory/vectors");
+      const targetUid = uid || currentUser.username;
+      const res = await fetch(`/api/memory/vectors?user_id=${encodeURIComponent(targetUid)}`);
       if (!res.ok) return;
       const data = await res.json();
       setVectors(data.items || []);
@@ -120,7 +145,6 @@ export default function Home() {
       console.error(e);
     }
   };
-
 
   const fetchInventoryStatus = async () => {
     try {
@@ -136,17 +160,17 @@ export default function Home() {
   const handleUploadFile = async (file: File) => {
     try {
       const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/inventory/load-file", {
+      formData.append("files", file);
+      const res = await fetch("/api/data/upload", {
         method: "POST",
         body: formData,
       });
       if (!res.ok) throw new Error("Upload failed");
       await fetchInventoryStatus();
-      await fetchMemoryGraph();
-      await fetchMemoryVectors();
+      await fetchMemoryGraph(currentUser.username);
+      await fetchMemoryVectors(currentUser.username);
     } catch (e) {
-      console.error("Error uploading inventory file:", e);
+      console.error("Error uploading data file:", e);
       alert("Failed to load and index file.");
     }
   };
@@ -198,50 +222,52 @@ export default function Home() {
       // Auto-stop recording at 25 seconds to respect Gnani STT limits
       if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
       recordingTimeoutRef.current = setTimeout(() => {
-        stopRecording();
+        if (isRecording) stopRecording();
       }, 25000);
 
+      // Animation frame update for live audio spikes
       const dataArr = new Uint8Array(64);
-      const updateMic = () => {
-        if (analyser && micStreamRef.current) {
+      const updateSpikes = () => {
+        if (analyser && micStreamRef.current && micStreamRef.current.active) {
           analyser.getByteFrequencyData(dataArr);
           setAudioData(new Uint8Array(dataArr));
-          requestAnimationFrame(updateMic);
+          requestAnimationFrame(updateSpikes);
         }
       };
-      requestAnimationFrame(updateMic);
-    } catch (e: any) {
-      console.error("Mic error:", e);
+      updateSpikes();
+    } catch (err) {
+      console.error("Mic Access Error:", err);
+      setVisualizerState("IDLE");
+      alert("Microphone permission required for voice communication.");
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
     if (recordingTimeoutRef.current) {
       clearTimeout(recordingTimeoutRef.current);
       recordingTimeoutRef.current = null;
     }
+
+    if (!isRecording) return;
     setIsRecording(false);
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
+    setVisualizerState("THINKING");
+
     if (audioProcessorRef.current) {
       audioProcessorRef.current.disconnect();
       audioProcessorRef.current = null;
     }
-
-    setVisualizerState("THINKING");
-
-    const wavBlob = encodeWAV(audioChunksRef.current, 16000);
-    sendVoiceToBackend(wavBlob);
-  };
-
-  const sendVoiceToBackend = async (wavBlob: Blob) => {
-    const formData = new FormData();
-    formData.append("audio_file", wavBlob, "voice_input.wav");
-    formData.append("language", language);
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+    }
 
     try {
+      const wavBlob = encodeWAV(audioChunksRef.current, 16000);
+      const formData = new FormData();
+      formData.append("audio_file", wavBlob, "input.wav");
+      formData.append("language", language);
+      formData.append("user_id", currentUser.username);
+
       const res = await fetch("/api/voice/process", { method: "POST", body: formData });
       if (!res.ok) throw new Error("Voice pipeline failed");
       const data = await res.json();
@@ -269,11 +295,11 @@ export default function Home() {
         setVisualizerState("IDLE");
       }
 
-      fetchMemoryGraph();
-      fetchMemoryVectors();
+      fetchMemoryGraph(currentUser.username);
+      fetchMemoryVectors(currentUser.username);
       setTimeout(() => {
-        fetchMemoryGraph();
-        fetchMemoryVectors();
+        fetchMemoryGraph(currentUser.username);
+        fetchMemoryVectors(currentUser.username);
       }, 1500);
     } catch {
       setVisualizerState("IDLE");
@@ -294,7 +320,11 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, language }),
+        body: JSON.stringify({
+          text,
+          language,
+          user_id: currentUser.username,
+        }),
       });
       if (!res.ok) throw new Error("Chat failed");
       const data = await res.json();
@@ -315,11 +345,11 @@ export default function Home() {
         setVisualizerState("IDLE");
       }
 
-      fetchMemoryGraph();
-      fetchMemoryVectors();
+      fetchMemoryGraph(currentUser.username);
+      fetchMemoryVectors(currentUser.username);
       setTimeout(() => {
-        fetchMemoryGraph();
-        fetchMemoryVectors();
+        fetchMemoryGraph(currentUser.username);
+        fetchMemoryVectors(currentUser.username);
       }, 1500);
     } catch {
       setVisualizerState("IDLE");
@@ -362,25 +392,51 @@ export default function Home() {
             requestAnimationFrame(updateSpeech);
           }
         };
-        requestAnimationFrame(updateSpeech);
+        updateSpeech();
       })
-      .catch(() => {
+      .catch((err) => {
+        console.warn("Speech playback error:", err);
         setVisualizerState("IDLE");
       });
   };
 
-  return (
-    <div className="flex flex-col h-screen w-screen bg-[#07090e] text-slate-100 overflow-hidden select-none relative font-sans">
-      {/* Ambient background bloom */}
-      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_35%,rgba(0,240,255,0.04)_0%,transparent_60%)]" />
+  const handleUserChange = (newUser: UserProfile) => {
+    setCurrentUser(newUser);
+    try {
+      localStorage.setItem("smar_user", JSON.stringify(newUser));
+    } catch {
+      // ignore
+    }
+    // Update welcome message
+    setMessages([
+      {
+        id: `welcome-${Date.now()}`,
+        role: "assistant",
+        text: `Welcome, ${newUser.name}! Active user is now @${newUser.username}. How can I help you today?`,
+        timestamp: "Just now",
+      },
+    ]);
+    fetchMemoryGraph(newUser.username);
+    fetchMemoryVectors(newUser.username);
+  };
 
-      {/* Minimalist Top Bar */}
+  return (
+    <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none relative">
+      {/* Background ambient radial gradients */}
+      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[550px] h-[550px] bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-[650px] h-[650px] bg-blue-600/5 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Header with User Badge, Language toggle, and Memory Drawer */}
       <Header
         onToggleMemory={() => setIsMemoryOpen((prev) => !prev)}
         isMemoryOpen={isMemoryOpen}
         isConnected={isConnected}
         language={language}
         onToggleLanguage={() => setLanguage((prev) => (prev === "en-IN" ? "hi-IN" : "en-IN"))}
+        currentUser={currentUser}
+        onOpenUserModal={() => setIsUserModalOpen(true)}
+        onToggleDataUpload={() => setIsMemoryOpen(true)}
+        isDataReady={inventoryStatus?.ready_to_answer ?? true}
       />
 
       {/* Centered Minimalist Stage */}
@@ -401,18 +457,26 @@ export default function Home() {
         </div>
       </main>
 
+      {/* Multi-User Login & Switcher Modal */}
+      <UserAuthModal
+        isOpen={isUserModalOpen}
+        onClose={() => setIsUserModalOpen(false)}
+        currentUser={currentUser}
+        onUserChange={handleUserChange}
+      />
 
-      {/* Slide-over Memory Drawer */}
+      {/* Slide-over Cognitive & Surprise Data Inspector */}
       <MemoryInspector
         isOpen={isMemoryOpen}
         onClose={() => setIsMemoryOpen(false)}
         triples={triples}
         vectors={vectors}
         inventoryStatus={inventoryStatus}
-        onRefreshGraph={fetchMemoryGraph}
-        onRefreshVectors={fetchMemoryVectors}
+        onRefreshGraph={() => fetchMemoryGraph(currentUser.username)}
+        onRefreshVectors={() => fetchMemoryVectors(currentUser.username)}
         onRefreshInventory={fetchInventoryStatus}
         onUploadFile={handleUploadFile}
+        currentUsername={currentUser.username}
       />
 
       {/* Hidden audio element for speech playback */}

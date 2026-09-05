@@ -38,9 +38,10 @@ core/models/
 # Databases & local state
 *.sqlite
 *.sqlite3
-data/*.db
-data/*.csv
-data/*.xlsx
+*.db-shm
+*.db-wal
+data/*
+!data/.gitkeep
 data/uploads/
 
 # Audio scratch files
