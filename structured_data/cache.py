@@ -8,11 +8,13 @@ data-classification based TTL policies (Static vs. Volatile inventory fields),
 selective invalidation, and graceful fallback handling on cache unavailable scenarios.
 """
 
-import time
-import threading
+import json
 import logging
-from typing import Any, Optional, Dict, List
+import os
+import threading
+import time
 from collections import OrderedDict
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("smar.structured_data.cache")
 
@@ -163,24 +165,11 @@ class HotDataCacheManager:
                 "hit_ratio_pct": round(hit_ratio, 2),
                 "evictions": self.evictions
             }
-=======
-SMAR v2 Tiered Hot Cache Layer
-==============================
-High-concurrency cache layer supporting Redis (Docker container `smar-redis-cache`)
-with seamless, thread-safe In-Memory LRU fallback.
 
-Ensures zero latency hit and non-blocking operation for the Voice AI loop.
-"""
 
-import json
-import logging
-import os
-import threading
-import time
-from collections import OrderedDict
-from typing import Any, Dict, List, Optional
-
-logger = logging.getLogger("smar.cache")
+# ==============================================================================
+# Tiered Hot Cache Layer (Redis Docker + Thread-Safe In-Memory LRU Fallback)
+# ==============================================================================
 
 
 class InMemoryLRUCache:

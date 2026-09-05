@@ -10,8 +10,11 @@ from .db import InventoryDatabaseManager
 from .etl import InventoryETLPipeline
 from .generator import KiranaInventoryDataGenerator
 from .read_models import ReadModelManager
-from .cache import HotDataCacheManager
+from .cache import HotDataCacheManager, TieredHotCache, InMemoryLRUCache, hot_cache
 from .service import StructuredDataService
+from .sync_engine import UniversalDataSyncEngine
+from .multi_table_manager import MultiTableWarehouseManager
+from .schema_introspector import SchemaIntrospector
 
 __all__ = [
     "InventoryItem",
@@ -22,5 +25,11 @@ __all__ = [
     "KiranaInventoryDataGenerator",
     "ReadModelManager",
     "HotDataCacheManager",
+    "TieredHotCache",
+    "InMemoryLRUCache",
+    "hot_cache",
     "StructuredDataService",
+    "UniversalDataSyncEngine",
+    "MultiTableWarehouseManager",
+    "SchemaIntrospector",
 ]
