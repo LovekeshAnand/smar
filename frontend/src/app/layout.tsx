@@ -16,6 +16,11 @@ export const metadata: Metadata = {
   title: "SMAR — Memory-Driven Autonomous Voice Platform",
   description:
     "Autonomous voice intelligence grounded in persistent Knowledge Graph memory, subword vector retrieval, and local Epsilon 7B LLM.",
+  icons: {
+    icon: "/smar_logo_transparent.png",
+    shortcut: "/smar_logo_transparent.png",
+    apple: "/smar_logo_transparent.png",
+  },
 };
 
 export default function RootLayout({

@@ -1,45 +1,70 @@
-# SMAR: Autonomous Memory-Driven Voice & Data Intelligence Platform
+<div align="center">
 
-> **A voice-first autonomous AI platform combining real-time multilingual speech, persistent dual-store cognitive memory, multi-tenant knowledge graphs, tiered Redis caching, and a dynamic 1.59M+ row data warehouse engine.**
+<img src="./smar_banner.png" alt="SMAR Banner" width="100%" />
 
-![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.14-blue?style=flat-square)
-![FastAPI](https://img.shields.io/badge/FastAPI-v2.0.0-009688?style=flat-square)
-![Next.js](https://img.shields.io/badge/Next.js-15%20App%20Router-black?style=flat-square)
-![Redis](https://img.shields.io/badge/Redis-Docker%20L2%20Cache-red?style=flat-square)
-![SQLite](https://img.shields.io/badge/SQLite-FTS5%20Warehouse-003B57?style=flat-square)
-![Inference](https://img.shields.io/badge/Inference-Local%20Qwen2.5%207B%20GGUF-purple?style=flat-square)
-![Voice](https://img.shields.io/badge/Voice-Gnani.ai%20%2F%20Vachana%20Voice-orange?style=flat-square)
-![Tests](https://img.shields.io/badge/Tests-54%20Passing-brightgreen?style=flat-square)
+# smar
+
+**स्मरण (*Smaraṇa*)** — *The act of remembering; to hold what matters in memory.*
+
+### Autonomous Memory-Driven Voice & Data Intelligence Platform
+
+<p align="center">
+  A voice-first autonomous AI system combining real-time multilingual speech synthesis, persistent dual-store cognitive memory, multi-tenant knowledge graphs, tiered Redis caching, and a dynamic 1.59M+ row data warehouse engine.
+</p>
+
+<!-- Shields / Badges -->
+<p align="center">
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" /></a>
+  <a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-v2.0.0-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" /></a>
+  <a href="https://nextjs.org"><img src="https://img.shields.io/badge/Next.js-16%20App%20Router-000000?style=for-the-badge&logo=next.js&logoColor=white" alt="Next.js" /></a>
+  <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-FTS5%20Warehouse-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite" /></a>
+  <a href="https://redis.io"><img src="https://img.shields.io/badge/Redis-Docker%20L2%20Cache-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis" /></a>
+  <a href="https://github.com/QwenLM/Qwen2.5"><img src="https://img.shields.io/badge/Inference-Qwen%202.5%207B%20GGUF-6366F1?style=for-the-badge&logo=openai&logoColor=white" alt="Qwen" /></a>
+  <a href="https://gnani.ai"><img src="https://img.shields.io/badge/Voice-Gnani.ai%20%2F%20Vachana-FF6F00?style=for-the-badge&logo=soundcharts&logoColor=white" alt="Voice" /></a>
+  <a href="./tests"><img src="https://img.shields.io/badge/Tests-100%25%20Passing%20(54%20Unit%20%2B%2038%20Extreme)-10B981?style=for-the-badge&logo=checkmarx&logoColor=white" alt="Tests" /></a>
+</p>
+
+<p align="center">
+  <a href="#-executive-summary--vision"><b>Vision</b></a> •
+  <a href="#-system-architecture"><b>Architecture</b></a> •
+  <a href="#-core-platform-capabilities"><b>Capabilities</b></a> •
+  <a href="#-repository-structure"><b>Repo Layout</b></a> •
+  <a href="#-quick-start-guide"><b>Quickstart</b></a> •
+  <a href="#-battle-tested-validation-suite"><b>Testing Suite</b></a> •
+  <a href="#-sample-interactions--live-performance"><b>Live Examples</b></a>
+</p>
 
 ---
 
-## 1. Executive Summary & Vision
+</div>
 
-Traditional voice AI assistants suffer from two major limitations:
-1. **Amnesia**: Conversations are stateless. When the session ends, all context is lost. They cannot recall your name, your preferences, or what was discussed earlier without massive context-stuffing.
-2. **Disconnected Data & Read-Only Passivity**: They cannot query complex enterprise datasets or perform mutations (CRUD operations) and aggregations in real time without brittle, hardcoded SQL rules or sluggish latency that breaks conversational speech.
+## 1. 🌟 Executive Summary & Vision
 
-**SMAR** (Smart Memory & Autonomous Reasoning) is built from the ground up to solve both problems:
-- **Zero-Latency Voice Loop**: Native integration with Gnani.ai / Vachana.ai (Prisma STT & Timbre TTS) in English and Indian languages (Hindi, Hinglish).
-- **Persistent Cognitive Context Layer**: SQLite Knowledge Graph (`kg_triples`) and subword-vector semantic memory (`semantic_memories`) using **upsert-by-similarity** to continuously remember user attributes, preferences, and relationships.
-- **Dynamic 1.59M+ Row Warehouse Engine**: Introspects, indexes, and searches across **12 tables with 1,591,380 rows (65.84 Lakh data points)** in sub-100ms with FTS5 and numeric fallbacks.
-- **Dynamic Operations Layer (CRUD & Aggregations)**: Executes zero-hardcoding mutations (`INSERT`, `UPDATE`, `DELETE`) and aggregations (`SUM`, `AVG`, `COUNT`, `MIN`, `MAX`, `GROUP BY`) with before/after state diffing and FTS5 synchronization.
-- **Adaptive Visual Data Synthesis**: Headless chart generator rendering dark-themed responsive bar charts, donut charts, and high-impact KPI metric badges directly to Base64 PNGs.
-- **Full Frontend Transparency**: Dedicated glassmorphic UI cards showing exactly what operation was performed, SQL executed, latency in ms, affected records, before/after diffs, and interactive data tables.
-- **Tiered Hot Cache**: Two-tier caching (L1 In-Memory LRU + L2 Redis Docker Container) providing sub-millisecond query responses.
-- **Organic Fact Extraction**: Dynamic background cognitive extraction (Qwen 2.5 Coder 7B) that extracts verified personal user facts without contaminating the user's graph with database search results.
-- **Conversational Recall & Anti-Refusal Directives**: Instant recall of the first question asked in a session, dynamic identity disambiguation, and complete elimination of canned AI refusal boilerplate.
+Traditional voice AI assistants suffer from two fatal limitations:
+1. **Amnesia (Loss of Context)**: Conversations are completely ephemeral. When a session terminates, all context is lost. They cannot recall your identity, preferences, ongoing tasks, or earlier dialogue turns without massive, expensive context-stuffing.
+2. **Disconnected Data & Passivity**: They cannot query enterprise databases or execute mutations (`INSERT`, `UPDATE`, `DELETE`) and aggregations in real time without brittle, hardcoded SQL rules or sluggish multi-second latency that breaks conversational speech flow.
+
+**SMAR** (Smart Memory & Autonomous Reasoning) is architected from first principles to bridge voice, memory, and warehouse execution:
+- 🎙️ **Zero-Latency Multilingual Voice Loop**: Real-time integration with Gnani.ai / Vachana.ai (Prisma STT & Timbre TTS) in English and Indian languages (Hindi, Hinglish).
+- 🧠 **Persistent Cognitive Context Layer**: Multi-tenant SQLite Knowledge Graph (`kg_triples`) and subword-vector semantic memory (`semantic_memories`) utilizing **upsert-by-similarity** to continuously remember user attributes, preferences, and relationships across sessions.
+- ⚡ **Dynamic 1.59M+ Row Warehouse Engine**: Introspects, indexes, and queries across **12 tables with 1,591,380 rows (65.84 Lakh data points)** in sub-100ms with SQLite FTS5 full-text indexing and numeric fallbacks.
+- 🛡️ **Zero-Hardcoding Operations Layer**: Executes mutations (`INSERT`, `UPDATE`, `DELETE`) and mathematical aggregations (`SUM`, `AVG`/`MEAN`, `COUNT`, `MIN`, `MAX`, `GROUP BY`, `BETWEEN Range`) with strict metric-vs-identifier column prioritization, before/after diffing, and live FTS5 synchronization.
+- 🔍 **Deep Relational Line-Item Disambiguation**: Disambiguates line item IDs from parent order IDs, computes line-item arithmetic ($unit\_price \times qty$), and joins payments and shipments without LLM hallucination.
+- 📊 **Adaptive Visual Data Synthesis**: Headless chart synthesizer rendering dark-themed responsive bar charts, donut charts, and high-impact KPI metric badges directly to Base64 PNGs without disk I/O.
+- 🪟 **Transparent Glassmorphic Interface**: Dedicated Next.js cards displaying executed SQL, latency in milliseconds, affected records, before/after diffs, and interactive data tables.
+- 🚀 **Tiered Hot Cache & Anti-Poisoning Architecture**: Two-tier caching (L1 In-Memory LRU + L2 Redis Docker Container) with strict memory guardrails preventing transactional query cross-contamination into personal semantic memory.
+- 💬 **Conversational Recall & Anti-Refusal Directives**: Instant recall of the first question asked in a session, dynamic identity disambiguation, and complete elimination of canned AI refusal boilerplate.
 
 ---
 
-## 2. System Architecture
+## 2. 🏛️ System Architecture
 
 ```mermaid
 flowchart TB
     %% Client & Voice Intake
-    subgraph ClientVoice ["1. Audio Intake and Frontend"]
+    subgraph ClientVoice ["1. Audio Intake & Frontend Experience"]
         UserMic["Human Speaker / Microphone"]
-        WebUI["Next.js 15 Web Dashboard"]
+        WebUI["Next.js 16 Web Dashboard"]
         GnaniSTT["Gnani / Vachana Speech-to-Text"]
         OpCards["Operation, Table & Chart Cards"]
     end
@@ -50,7 +75,7 @@ flowchart TB
 
     %% Core Backend Server
     subgraph CoreServer ["2. SMAR FastAPI Core Server (Port 5000)"]
-        Router{"Intent Classifier and Query Router"}
+        Router{"Intent Classifier & Query Router"}
 
         %% Conversational Route
         Router -->|Conversational / Meta Query| ConvBypass["Conversational Bypass (Sub-30ms)"]
@@ -59,7 +84,7 @@ flowchart TB
         subgraph OperationsEngine ["Dynamic Operations & Data Engine"]
             OpsAnalyzer["Operations Analyzer (CRUD & Aggregations)"]
             Visualizer["Adaptive Data Visualizer (Headless Base64 PNG)"]
-            EntityExtractor["Entity and ID Extractor"]
+            EntityExtractor["Entity & ID Extractor"]
             Introspector["Universal Schema Introspector"]
             FTSearch["FTS5 Full-Text Search"]
             WarehouseDB[("Warehouse DB: 12 Tables / 1.59M Rows")]
@@ -91,7 +116,7 @@ flowchart TB
             SessionRecall["Session History Recall (get_first_turn)"]
             KGStore[("Knowledge Graph (kg_triples)")]
             VectorStore[("Vector Store (semantic_memories)")]
-            IdentityGuard["Identity Guard and Anti-Refusal Directives"]
+            IdentityGuard["Identity Guard & Anti-Refusal Directives"]
 
             HybridRetriever <--> KGStore
             HybridRetriever <--> VectorStore
@@ -118,7 +143,7 @@ flowchart TB
     PromptComposer -->|ChatML Context + Prompt| LlamaServer
 
     %% Output Synthesis & Knowledge Formation
-    subgraph OutputPipeline ["4. Voice Synthesis and Dynamic Learning"]
+    subgraph OutputPipeline ["4. Voice Synthesis & Dynamic Learning"]
         GnaniTTS["Gnani / Vachana Text-to-Speech"]
         AudioPlayback["WebAudio Speaker Playback"]
         FactExtractor["Cognitive Fact Extractor (Background Task)"]
@@ -131,69 +156,89 @@ flowchart TB
         OpsAnalyzer -->|Payload: Diff, SQL, Table, Chart| OpCards
         FactExtractor -->|Form Verified Triples| KGStore
         FactExtractor -.->|Live Sync| WSBroadcast
-        WSBroadcast -.->|Real-Time Nodes and Edges| WebUI
+        WSBroadcast -.->|Real-Time Nodes & Edges| WebUI
     end
 ```
 
 ---
 
-## 3. Current Project Capabilities & Milestones
+## 3. ⚙️ Core Platform Capabilities
 
 ### 3.1 Multi-Table Warehouse Engine (1.59M+ Rows / 65.84 Lakh Data Points)
-- **Synchronized 12-Table Retail Warehouse**:
-  - `order_items`: 600,000 rows (5 columns / 3,000,000 data points)
-  - `orders`: 300,000 rows (5 columns / 1,500,000 data points)
-  - `shipments`: 300,000 rows (3 columns / 900,000 data points)
-  - `payments`: 300,000 rows (3 columns / 900,000 data points)
-  - `customers`: 50,000 rows (3 columns / 150,000 data points)
-  - `returns`: 30,000 rows (3 columns / 90,000 data points)
-  - `products`: 10,000 rows (4 columns / 40,000 data points)
-  - `employees`: 1,000 rows (3 columns / 3,000 data points)
-  - `suppliers`: 200 rows (2 columns / 400 data points)
-  - `stores`: 100 rows (2 columns / 200 data points)
-  - `promotions`: 50 rows (2 columns / 100 data points)
-  - `categories`: 30 rows (2 columns / 60 data points)
-  - **Total**: **1,591,380 rows** across **12 tables** (**6,583,760 cells**).
-- **Universal Schema Introspector**: Introspects tables, primary keys, foreign keys, numeric columns, and data types automatically upon ingestion.
-- **Dynamic Domain Vocabulary**: Learns singular/plural inflections (`employees` ↔ `employee`, `categories` ↔ `category`) and maps column attributes (`salary` → `employees`, `signup_date` → `customers`) dynamically without hardcoded schemas.
-- **Ultra-Fast Search**: Blends SQLite FTS5 full-text indexing, exact numeric/ID lookups, and schema-guided text searches with non-blocking execution.
+The synchronized enterprise database consists of 12 tables containing **1,591,380 rows** across **6,583,760 cells**:
 
-### 3.2 Dynamic Operations Layer (CRUD & Aggregations)
-- **Zero-Hardcoding Dynamic Mutations**:
+| Table Name | Row Count | Column Count | Total Data Points | Key Attributes |
+| :--- | :--- | :--- | :--- | :--- |
+| `order_items` | **600,000** | 5 | 3,000,000 | `order_item_id`, `order_id`, `product_id`, `qty`, `unit_price` |
+| `orders` | **300,000** | 5 | 1,500,000 | `order_id`, `customer_id`, `order_date`, `total_amount`, `status` |
+| `shipments` | **300,000** | 3 | 900,000 | `shipment_id`, `order_id`, `status` |
+| `payments` | **300,000** | 3 | 900,000 | `payment_id`, `order_id`, `amount` |
+| `customers` | **50,000** | 3 | 150,000 | `customer_id`, `name`, `email` |
+| `returns` | **30,000** | 3 | 90,000 | `return_id`, `order_id`, `refund` |
+| `products` | **10,000** | 4 | 40,000 | `product_id`, `name`, `category_id`, `price` |
+| `employees` | **1,000** | 3 | 3,000 | `employee_id`, `name`, `salary` |
+| `suppliers` | **200** | 2 | 400 | `supplier_id`, `name` |
+| `stores` | **100** | 2 | 200 | `store_id`, `city` |
+| `promotions` | **50** | 2 | 100 | `promo_id`, `discount_percent` |
+| `categories` | **30** | 2 | 60 | `category_id`, `name` |
+| **Total** | **1,591,380** | — | **6,583,760** | **Fully introspected, indexed & searchable** |
+
+- **Universal Schema Introspector**: Introspects tables, primary keys, foreign keys, numeric columns, and data types automatically upon ingestion.
+- **Dynamic Domain Vocabulary**: Learns singular/plural inflections (`employees` ↔ `employee`, `categories` ↔ `category`) and maps column attributes (`salary` → `employees`, `refund` → `returns`) without hardcoded rules.
+- **Sub-100ms Search**: Combines SQLite FTS5 full-text indexing, exact numeric/ID lookups, and schema-guided text searches with non-blocking execution.
+
+---
+
+### 3.2 Dynamic Operations Layer (Zero Hardcoding)
+- **Dynamic Database Mutations**:
   - `INSERT`: Validates column types, auto-increments primary keys, synchronizes FTS5 full-text index, and invalidates L1/L2 caches.
-  - `UPDATE`: Captures full Before/After diffs, updates record fields, synchronizes FTS5, and invalidates caches.
-  - `DELETE`: Captures pre-deletion state, safely removes rows, updates FTS5, and clears hot cache.
-  - `TABULAR_QUERY`: Structured multi-column retrieval with pagination, column metadata, and execution timing.
-- **Dynamic Mathematical Aggregations**:
-  - Computes `SUM`, `AVG`, `COUNT`, `MIN`, `MAX` across any numeric column in the warehouse.
-  - Supports dynamic `WHERE` filters and multi-dimensional `GROUP BY` (e.g. *average salary per store*).
-  - Executed live on 1,000 employees: summed $49,448,064 in 6.72ms.
+  - `UPDATE`: Captures full Before/After diffs, updates record fields, synchronizes FTS5, and clears hot cache.
+  - `DELETE`: Captures pre-deletion state, safely removes rows, updates FTS5, and evicts cached entries.
+  - `TABULAR_QUERY`: Structured multi-column retrieval with pagination, column metadata, and execution timing across all tables.
+- **Metric-vs-Identifier Column Prioritization**:
+  - Distinguishes numeric metrics (`salary`, `price`, `amount`, `refund`, `qty`) from identifiers (`employee_id`, `store_id`, `order_id`). Aggregations like `SUM`, `AVG`/`MEAN`, `MIN`, `MAX` strictly prioritize metric columns over ID columns.
+- **Range-First Evaluation**:
+  - Range clauses (`BETWEEN ? AND ?`) take precedence over single-entity equality checks, resolving complex queries like *"mean of salaries from range of employee id 30 to 40"* $\rightarrow$ `52,061.27` in **2.76ms**.
+- **Deep Line-Item Disambiguation**:
+  - Differentiates line item IDs (e.g. `order_item_id 520580`) from parent order IDs (e.g. `order_id 292487`).
+  - Computes exact unit price $\times$ quantity arithmetic for individual line items.
+  - Recursively aggregates line items, payments, and shipments for complete order value calculations (*"total order value for order 292487"* $\rightarrow$ `18,166` across 2 line items).
+
+---
 
 ### 3.3 Adaptive Visual Data Synthesis
 - **In-Memory Headless Visualizer**: Uses `matplotlib` / `seaborn` with the headless `Agg` backend to render charts directly to Base64 PNGs without disk I/O in <30ms.
 - **Dynamic Chart Adaptation**:
   - **Horizontal & Vertical Bar Charts**: Tailored for categorical distributions and group-by aggregations.
   - **Donut / Pie Charts**: Tailored for proportional share and category breakdowns.
-  - **High-Impact KPI Metric Badges**: Tailored for single scalar sums, averages, and counts.
-- **Glassmorphic Dark Theme**: Automatically styled to match the dark `#0f172a` slate palette with vibrant cyan/violet highlights, formatted currency/number labels, and subtle grids.
+  - **High-Impact KPI Badges**: Tailored for single scalar sums, averages, and counts.
+- **Glassmorphic Dark Styling**: Styled to match the dark `#0f172a` slate palette with vibrant cyan/violet highlights, formatted currency/number labels, and subtle grids.
+
+---
 
 ### 3.4 Tiered Caching Subsystem
-- **Tier 1 (L1)**: In-Memory LRU Cache for microsecond responses.
+- **Tier 1 (L1)**: In-Memory LRU Cache for sub-millisecond responses.
 - **Tier 2 (L2)**: Dockerized Redis Container (`smar-redis-cache`) for persistent distributed caching.
 - **Warm Memory KG Cache**: Automatically maps recurring entity queries to canonical IDs, resolving subsequent queries in <1ms.
 
-### 3.5 Dynamic Knowledge Formation & Fact Attribution
+---
+
+### 3.5 Dynamic Knowledge Formation & Anti-Poisoning
 - **Zero Database Contamination**: The cognitive extractor analyzes conversation turns and extracts facts **only when the user states personal information about themselves** (e.g., location, job, preferences).
 - **No Query Attribution**: Queries about employee salaries, product prices, order dates, or warehouse inventory are strictly excluded from the user's personal knowledge graph.
 - **Dual Extraction Engine**: Combines regex heuristics (English, Hindi, Hinglish) with asynchronous local LLM parsing (Qwen 7B) running as non-blocking background tasks.
+
+---
 
 ### 3.6 Conversational Routing & Session History Recall
 - **Conversational Bypass**: Pure chitchat, greetings, and identity queries (*"what is your name"*, *"who are you"*) bypass 1.5M database records and respond in ~25ms.
 - **Session Conversation Recall**: Custom store methods (`get_first_turn`, `get_all_user_questions`) allow SMAR to recall the very first question asked in a session, even after dozens of dialogue turns.
 - **Anti-Refusal Guardrails**: Eliminates generic LLM refusals (*"As an AI assistant, I don't have access to previous conversations..."*) by injecting explicit identity directives and session history context.
 
-### 3.7 Real-Time Frontend & Operations Transparency
-- **Next.js 15 Web Application**: Push-to-talk voice interface with dynamic WebAudio spikes visualizer.
+---
+
+### 3.7 Real-Time Glassmorphic Frontend
+- **Next.js 16 Web Application**: Push-to-talk voice interface with dynamic WebAudio spikes visualizer.
 - **Operation Card**: Displays executed mutation badge (`INSERT`, `UPDATE`, `DELETE`, `AGGREGATION`), affected table, exact SQL query, latency in ms, and interactive Before/After state diffs.
 - **Data Table Card**: Renders structured query results in clean, responsive tables with sticky headers and record counts.
 - **Visual Chart Card**: Displays synthesized Base64 charts with modal zoom and one-click PNG download.
@@ -202,10 +247,11 @@ flowchart TB
 
 ---
 
-## 4. Repository Structure
+## 4. 📁 Repository Structure
 
 ```
 smar/
+├── smar_banner.png                        # Official SMAR Repository Banner
 ├── smart_data/                            # Smart Data & Operations Subsystem
 │   ├── engine.py                          # Unified coordinator for queries, operations & cache
 │   ├── operations.py                      # Dynamic CRUD & Aggregation planner
@@ -243,9 +289,10 @@ smar/
 ├── auth/                                  # Multi-User Authentication
 │   └── user_manager.py                    # User registration, hashing, and session management
 │
-├── frontend/                              # Next.js Web Interface
+├── frontend/                              # Next.js 16 Web Interface
+│   ├── public/                            # Static assets & smar_logo_transparent.png
 │   ├── src/app/                           # App router (page.tsx, layout.tsx)
-│   ├── src/components/                    # OperationCard, DataTableCard, VisualChartCard, MemoryInspector
+│   ├── src/components/                    # Header, OperationCard, DataTableCard, VisualChartCard
 │   └── next.config.ts                     # Configured for 1GB uploads and API proxying
 │
 ├── data/                                  # Persistent Databases
@@ -261,13 +308,17 @@ smar/
 │   ├── test_tiered_cache.py
 │   └── test_epsilon_bridge.py
 │
+├── scratch/                               # Battle & Extreme Test Suites
+│   ├── battle_test_suite.py               # 18/18 zero-hardcoding operations suite
+│   └── warehouse_extreme_tests.py         # 20/20 real-world warehouse stress test suite
+│
 ├── server.py                              # FastAPI backend application server & operations API
 └── requirements.txt                       # Backend Python dependencies
 ```
 
 ---
 
-## 5. Quick Start Guide
+## 5. 🚀 Quick Start Guide
 
 ### 5.1 Prerequisites
 - **Python**: 3.11+
@@ -325,7 +376,7 @@ smar/
 1. **Start the Redis Cache Container**:
    ```bash
    docker start smar-redis-cache
-   # (Or run: docker run -d --name smar-redis-cache -p 6379:6379 redis:alpine)
+   # Or create new: docker run -d --name smar-redis-cache -p 6379:6379 redis:alpine
    ```
 
 2. **Start the Local Model Server (Qwen 7B)**:
@@ -348,32 +399,72 @@ smar/
 
 ---
 
-## 6. Testing & Validation
+## 6. 🧪 Battle-Tested Validation Suite
 
-Execute the complete test suite across the Operations Layer, Context Layer, Smart Data Layer, Tiered Caching, and Fact Extraction:
+SMAR is verified through a rigorous 3-tier testing pyramid:
 
+```
+                  ▲
+                 / \
+                / 20\    Warehouse Extreme Stress Tests (100% Pass)
+               /-----\   (Noisy voice, Hinglish, SQLi, line-item arithmetic)
+              /  18   \  Zero-Hardcoding Battle Tests (100% Pass)
+             /---------\ (Dynamic CRUD, metric selection, range regex, charts)
+            /    54     \ Unit & Integration Tests (100% Pass)
+           /-------------\ (Memory, hybrid RAG, cache, adapters, bridge)
+```
+
+### 6.1 Unit & Integration Test Suite (54 Tests)
 ```bash
 python -m unittest discover tests
 ```
-
-**Output**:
 ```
 Ran 54 tests in 11.850s
-
 OK
+```
+
+### 6.2 Zero-Hardcoding Battle Test Suite (18 Tests)
+Validates dynamic entity resolution, mathematical metric prioritization, STT glitch normalization, CRUD mutations, visual charts, and tabular browsing:
+```bash
+python scratch/battle_test_suite.py
+```
+```
+TEST SUMMARY: 18/18 PASSED (100.0%) | 0 FAILED
+```
+
+### 6.3 Warehouse Extreme Stress Suite (20 Tests)
+Simulates a real-world warehouse operator with noisy voice commands, colloquial Hinglish phrasing, multi-item order value calculations, SQL injection resilience, and non-existent ID lookups across 1.59M records:
+```bash
+python scratch/warehouse_extreme_tests.py
+```
+```
+EXTREME TEST SUMMARY: 20/20 PASSED (100.0%) | 0 FAILED
 ```
 
 ---
 
-## 7. Sample Interactions & Verified Live Performance
+## 7. 💬 Sample Interactions & Live Performance
 
 | User Query / Utterance | Platform Execution & Route | Spoken Voice Confirmation & Visual Artifact |
 | :--- | :--- | :--- |
-| *"Can you tell me the sum of all the salaries that was given to employees"* | Operations Layer (`SELECT SUM(salary) FROM employees`, 6.72ms) | Spoken: *"The sum of all salary in employees is 49,448,064."* + High-Impact KPI Badge |
-| *"Show me the average salary per store as a chart"* | Operations Layer (`SELECT store_id, AVG(salary) FROM employees GROUP BY store_id`, 12ms) | Spoken: *"The average salary grouped by store_id has been computed."* + Dark Base64 Bar Chart |
-| *"update salary of employee 98 to 35000"* | Operations Layer (`UPDATE employees SET salary = 35000 WHERE employee_id = 98`, 8ms) | Spoken: *"Successfully updated employee 98 in employees."* + OperationCard with Before/After Diff (`31262` → `35000`) |
-| *"Show me products in table format"* | Operations Layer (`SELECT * FROM products LIMIT 10`, 9ms) | Spoken: *"Retrieved 10 records from products."* + Interactive DataTableCard |
-| *"what's the salary of employee 98"* | Smart Data Layer (`employees` table, FTS5 + exact ID search in 78ms) | Spoken: *"The salary of employee number 98 is 35000. Is there anything else I can help with?"* |
+| *"can you tell me the mean of the salaries from the range of employee id 30 to 40"* | Operations Layer (`SELECT AVG(salary) FROM employees WHERE employee_id BETWEEN 30 AND 40`, **2.76ms**) | Spoken: *"The avg of salary in employees for employee_id from 30 to 40 is 52,061.27 (evaluated across 11 records)."* + High-Impact KPI Badge |
+| *"what is the total order value for order 292487"* | Relational Enricher (Queries `order_items`, joins `payments` & `shipments`, **28ms**) | Spoken: *"Order 292487 was placed on 2021-11-19 and contains 2 item(s) with a total order value of 18166."* |
+| *"bhai tell me what is the price of order id 520580"* | Disambiguation Engine (Disambiguates line item vs. parent order, **32ms**) | Spoken: *"Order Item 520580 belongs to Order number 292487. Unit price is 2812, quantity is 4, so the total for this item is 11248."* |
+| *"what is the status of shipment for order 292487"* | Relational Enricher (`shipments` table join on `order_id`, **28ms**) | Spoken: *"Shipment #292487: Status: late, Shipment Id: 292487, Order Id: 292487."* |
+| *"what is the sum of refunds in returns"* | Operations Layer (`SELECT SUM(refund) FROM returns`, **21ms**) | Spoken: *"The sum of refund in returns is 75,962,300 across 30000 records."* |
+| *"what is the maximum price among all products"* | Operations Layer (`SELECT MAX(price) FROM products`, **22ms**) | Spoken: *"The max of price in products is 4,999 across 10000 records."* |
+| *"Show me the average salary per store as a chart"* | Operations Layer (`SELECT store_id, AVG(salary) FROM employees GROUP BY store_id`, **181ms**) | Spoken: *"Here is the avg of salary grouped by store id across employees."* + Dark Base64 Bar Chart |
+| *"update salary of employee 98 to 35000"* | Operations Layer (`UPDATE employees SET salary = 35000 WHERE employee_id = 98`, **8ms**) | Spoken: *"Successfully updated employees (employee_id 98): salary changed to 35000."* + OperationCard with Before/After Diff (`31262` → `35000`) |
+| *"Show me all stores in a table"* | Operations Layer (`SELECT * FROM stores LIMIT 10`, **13ms**) | Spoken: *"Displaying 10 records from stores in table format."* + Interactive DataTableCard |
 | *"I live in Chandigarh and work as a data scientist"* | Heuristic & Cognitive Extractor (`LivesIn: Chandigarh`, `Role: data scientist`) | Spoken: *"Thank you for letting me know, Lokesh! How can I assist you further?"* |
 | *"Where do I live and what is my role?"* | Hybrid Context Layer (Recalls verified KG triples) | Spoken: *"You live in Chandigarh and your role is a data scientist. Is there anything else I can help with?"* |
-| *"i forgot what was the 1st question that i asked you and what's my name and what's your name"* | Conversational Routing + Session History Recall (<30ms) | Spoken: *"The first question you asked me was 'hi i am lokesh can you give me information about employee number 886'. My name is SMAR. How else may I assist you?"* |
+| *"i forgot what was the 1st question that i asked you and what's my name and what's your name"* | Conversational Routing + Session History Recall (**<30ms**) | Spoken: *"The first question you asked me was 'hi i am lokesh can you give me information about employee number 886'. My name is SMAR. How else may I assist you?"* |
+
+---
+
+## 8. 📜 License & Acknowledgments
+
+This project is licensed under the Apache 2.0 License. Powered by:
+- [Gnani.ai / Vachana.ai](https://gnani.ai) for multilingual voice synthesis & ASR.
+- [Qwen Team](https://github.com/QwenLM/Qwen2.5) for open-weight instruction-tuned language models.
+- [SQLite](https://sqlite.org) for FTS5 full-text indexing and dual-store cognitive memory.

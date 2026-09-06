@@ -482,7 +482,7 @@ export default function Home() {
       />
 
       {/* Main Stage with Cinematic Split Animation */}
-      <main className="flex-1 w-full h-[calc(100vh-65px)] overflow-hidden relative z-10 px-3 sm:px-6 pb-4 pt-2">
+      <main className="flex-1 w-full h-[calc(100vh-80px)] overflow-hidden relative z-10 px-3 sm:px-6 pb-4 pt-2">
         <div
           className={`w-full h-full flex flex-col lg:flex-row gap-5 items-stretch transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
             hasStarted ? "justify-between" : "justify-center items-center"

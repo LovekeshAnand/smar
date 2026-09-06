@@ -27,32 +27,27 @@ export const Header: React.FC<HeaderProps> = ({
   isDataReady = true,
 }) => {
   return (
-    <header className="h-14 px-6 flex items-center justify-between border-b border-white/5 bg-slate-950/60 backdrop-blur-md z-30">
+    <header className="h-20 px-6 flex items-center justify-between border-b border-white/5 bg-slate-950/60 backdrop-blur-md z-30">
       {/* Brand & Connection Status */}
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3.5">
           <span
-            className={`w-2 h-2 rounded-full ${
+            className={`w-2.5 h-2.5 rounded-full ${
               isConnected ? "bg-cyan-400 shadow-[0_0_8px_#00f0ff]" : "bg-slate-600"
             }`}
           />
-          <span className="font-sans font-semibold tracking-wider text-sm text-slate-200 lowercase">
+          <img
+            src="/smar_logo_transparent.png"
+            alt="smar logo"
+            className="h-14 sm:h-16 w-auto object-contain select-none transition-transform hover:scale-105"
+          />
+          <span
+            style={{ fontFamily: '"Times New Roman", Times, serif', color: "#ffffff" }}
+            className="text-2xl sm:text-3xl font-normal tracking-wide text-white lowercase select-none"
+          >
             smar
           </span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/5">
-            v2.2
-          </span>
         </div>
-
-        {/* Data Layer Quick Access */}
-        <button
-          onClick={onToggleDataUpload}
-          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/20 transition-colors"
-          title="Open Data Ingestion & Warehouse Inspector"
-        >
-          <span className={`w-1.5 h-1.5 rounded-full ${isDataReady ? "bg-emerald-400" : "bg-amber-400 animate-pulse"}`} />
-          <span>Surprise Data Sync</span>
-        </button>
       </div>
 
       {/* Right Actions: User Badge, Language toggle & Memory drawer toggle */}
