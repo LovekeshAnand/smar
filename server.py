@@ -354,8 +354,15 @@ async def process_chat(req: ChatRequest):
         "retrieval": retrieval,
         "extracted_facts": turn_result.get("extracted_facts", []),
         "audio_base64": audio_b64,
+        "operation_details": smart_res.get("operation_details"),
+        "table_data": smart_res.get("table_data"),
+        "visual_chart": smart_res.get("visual_chart"),
         "smart_data": {
             "intent": smart_res.get("intent"),
+            "operation": smart_res.get("operation"),
+            "operation_details": smart_res.get("operation_details"),
+            "table_data": smart_res.get("table_data"),
+            "visual_chart": smart_res.get("visual_chart"),
             "kg_cache_hit": smart_res.get("kg_cache_hit"),
             "matched_item": smart_res.get("matched_item"),
             "spoken_confirmation": smart_res.get("spoken_confirmation"),
@@ -403,7 +410,10 @@ async def process_voice(
             "context_used": "None",
             "retrieval": {},
             "extracted_facts": [],
-            "audio_base64": audio_b64
+            "audio_base64": audio_b64,
+            "operation_details": None,
+            "table_data": None,
+            "visual_chart": None
         }
 
     # 2. Run chat processing with the transcribed text and user_id
@@ -420,6 +430,9 @@ async def process_voice(
         "retrieval": chat_resp.get("retrieval"),
         "extracted_facts": chat_resp.get("extracted_facts"),
         "audio_base64": chat_resp["audio_base64"],
+        "operation_details": chat_resp.get("operation_details"),
+        "table_data": chat_resp.get("table_data"),
+        "visual_chart": chat_resp.get("visual_chart"),
         "smart_data": chat_resp.get("smart_data")
     }
 
@@ -565,8 +578,70 @@ async def reset_data_layer():
             })
         except Exception:
             pass
-    return status
+    return {"status": "ok", "sync_status": status}
 
+
+class DirectOperationRequest(BaseModel):
+    operation: str  # "AGGREGATION", "INSERT", "UPDATE", "DELETE", "TABULAR"
+    table: str
+    function: Optional[str] = "COUNT"
+    column: Optional[str] = "*"
+    group_by: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    filter_data: Optional[Dict[str, Any]] = None
+    update_data: Optional[Dict[str, Any]] = None
+    limit: Optional[int] = 10
+    wants_visual: Optional[bool] = False
+
+
+@app.post("/api/data/operation")
+async def execute_direct_operation(req: DirectOperationRequest):
+    """
+    Direct REST API endpoint to execute CRUD and Aggregation operations on any warehouse table.
+    """
+    op = req.operation.upper().strip()
+    mgr = smart_data_engine.warehouse_manager
+    viz = smart_data_engine.visualizer
+
+    try:
+        if op == "AGGREGATION":
+            res = await mgr.execute_aggregation_async(
+                table_name=req.table,
+                agg_func=req.function or "COUNT",
+                column=req.column or "*",
+                group_by=req.group_by
+            )
+            chart = viz.generate_chart_for_operation(res) if req.wants_visual or req.group_by else None
+            return {"status": "SUCCESS", "operation": op, "result": res, "visual_chart": chart}
+
+        elif op == "INSERT":
+            if not req.data:
+                raise HTTPException(status_code=400, detail="Data payload required for INSERT.")
+            res = await mgr.insert_record_async(table_name=req.table, data=req.data)
+            return {"status": "SUCCESS", "operation": op, "result": res}
+
+        elif op == "UPDATE":
+            if not req.filter_data or not req.update_data:
+                raise HTTPException(status_code=400, detail="Both filter_data and update_data required for UPDATE.")
+            res = await mgr.update_record_async(table_name=req.table, filter_data=req.filter_data, update_data=req.update_data)
+            return {"status": "SUCCESS", "operation": op, "result": res}
+
+        elif op == "DELETE":
+            if not req.filter_data:
+                raise HTTPException(status_code=400, detail="filter_data required for DELETE.")
+            res = await mgr.delete_record_async(table_name=req.table, filter_data=req.filter_data)
+            return {"status": "SUCCESS", "operation": op, "result": res}
+
+        elif op == "TABULAR":
+            res = await mgr.query_tabular_async(table_name=req.table, limit=req.limit or 10)
+            chart = viz.generate_chart_for_operation(res) if req.wants_visual else None
+            return {"status": "SUCCESS", "operation": op, "result": res, "visual_chart": chart}
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported operation: {req.operation}")
+    except Exception as e:
+        logger.error(f"Error in direct operation endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/inventory/search")

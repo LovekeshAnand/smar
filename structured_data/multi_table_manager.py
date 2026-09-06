@@ -458,28 +458,391 @@ class MultiTableWarehouseManager:
         table_name: str,
         agg_func: str = "COUNT",
         column: str = "*",
-        group_by: Optional[str] = None
+        group_by: Optional[str] = None,
+        filter_condition: Optional[str] = None,
+        filter_params: Optional[List[Any]] = None
     ) -> Dict[str, Any]:
-        """Runs fast aggregations with hot caching."""
-        cache_key = f"agg:{table_name}:{agg_func}:{column}:{group_by}"
+        """
+        Executes fast mathematical aggregations (SUM, AVG, COUNT, MIN, MAX) with hot caching.
+        Supports grouping and optional filter conditions.
+        """
+        import time
+        start_t = time.perf_counter()
+        agg_clean = agg_func.upper().strip()
+        if agg_clean not in ["COUNT", "SUM", "AVG", "MIN", "MAX"]:
+            agg_clean = "COUNT"
+
+        cache_key = f"agg:{table_name}:{agg_clean}:{column}:{group_by}:{filter_condition}"
         cached = hot_cache.get(cache_key)
         if cached:
             return cached
 
         with self._get_connection() as conn:
             cur = conn.cursor()
+            params = list(filter_params or [])
+            where_clause = f" WHERE {filter_condition}" if filter_condition else ""
+
             if group_by:
-                sql = f"SELECT \"{group_by}\", {agg_func}(\"{column}\") as val FROM \"{table_name}\" GROUP BY \"{group_by}\" ORDER BY val DESC LIMIT 10;"
-                cur.execute(sql)
+                col_expr = f"{agg_clean}(\"{column}\")" if column != "*" else f"{agg_clean}(*)"
+                sql = f"SELECT \"{group_by}\", {col_expr} as val FROM \"{table_name}\"{where_clause} GROUP BY \"{group_by}\" ORDER BY val DESC LIMIT 15;"
+                cur.execute(sql, params)
                 rows = cur.fetchall()
-                data = {str(r[group_by]): r["val"] for r in rows}
+                breakdown = {str(r[group_by]): r["val"] for r in rows}
+                total_val = sum(r["val"] for r in rows if r["val"] is not None)
+                elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+                data = {
+                    "operation": "AGGREGATION",
+                    "function": agg_clean,
+                    "table": table_name,
+                    "column": column,
+                    "group_by": group_by,
+                    "value": total_val,
+                    "formatted_value": f"{total_val:,.2f}" if isinstance(total_val, float) else f"{total_val:,}",
+                    "breakdown": breakdown,
+                    "sql": sql,
+                    "elapsed_ms": round(elapsed_ms, 2)
+                }
             else:
-                sql = f"SELECT {agg_func}({column if column == '*' else '\"' + column + '\"'}) as val FROM \"{table_name}\";"
-                cur.execute(sql)
-                data = {"value": cur.fetchone()["val"]}
+                col_expr = f"{agg_clean}({column if column == '*' else '\"' + column + '\"'})"
+                sql = f"SELECT {col_expr} as val, COUNT(*) as total_rows FROM \"{table_name}\"{where_clause};"
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                val = row["val"] if row else 0
+                cnt = row["total_rows"] if row else 0
+                elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+                
+                # Format nicely
+                if val is None:
+                    formatted = "0"
+                elif isinstance(val, float):
+                    formatted = f"{val:,.2f}"
+                elif isinstance(val, int):
+                    formatted = f"{val:,}"
+                else:
+                    formatted = str(val)
+
+                data = {
+                    "operation": "AGGREGATION",
+                    "function": agg_clean,
+                    "table": table_name,
+                    "column": column,
+                    "group_by": None,
+                    "value": val,
+                    "formatted_value": formatted,
+                    "total_rows_evaluated": cnt,
+                    "sql": sql,
+                    "elapsed_ms": round(elapsed_ms, 2)
+                }
 
         hot_cache.set(cache_key, data, ttl_seconds=600)
         return data
+
+    def insert_record(
+        self,
+        table_name: str,
+        data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Inserts a new record into any table, auto-detecting schema and updating FTS index.
+        """
+        import time
+        start_t = time.perf_counter()
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info(\"{table_name}\");")
+            table_cols = {r["name"]: r for r in cur.fetchall()}
+            if not table_cols:
+                raise ValueError(f"Table '{table_name}' does not exist.")
+
+            # Determine primary key or candidate id column
+            pk_col = next((c for c, r in table_cols.items() if r["pk"]), None)
+            if not pk_col:
+                singular = table_name[:-3] + "y" if table_name.endswith("ies") else table_name.rstrip("s")
+                for candidate in [f"{singular}_id", f"{table_name}_id", "id"]:
+                    if candidate in table_cols:
+                        pk_col = candidate
+                        break
+
+            # Filter provided data to valid columns
+            valid_data = {k: v for k, v in data.items() if k in table_cols}
+
+            # If an ID column exists and was not provided, automatically generate next ID
+            if pk_col and pk_col not in valid_data:
+                col_type = str(table_cols[pk_col]["type"]).upper()
+                if any(t in col_type for t in ["INT", "NUM", "SERIAL"]) or not col_type:
+                    cur.execute(f"SELECT COALESCE(MAX(\"{pk_col}\"), 0) + 1 FROM \"{table_name}\";")
+                    max_row = cur.fetchone()
+                    auto_val = max_row[0] if max_row else 1
+                    valid_data[pk_col] = auto_val
+
+            if not valid_data:
+                raise ValueError(f"No valid columns provided for table '{table_name}'. Available: {list(table_cols.keys())}")
+
+            cols = list(valid_data.keys())
+            placeholders = ", ".join(["?"] * len(cols))
+            col_names = ", ".join([f"\"{c}\"" for c in cols])
+            values = [valid_data[c] for c in cols]
+
+            sql = f"INSERT INTO \"{table_name}\" ({col_names}) VALUES ({placeholders});"
+            cur.execute(sql, values)
+            new_rowid = cur.lastrowid
+            new_id = valid_data.get(pk_col, new_rowid) if pk_col else new_rowid
+
+            # Sync FTS if FTS virtual table exists
+            fts_table = f"{table_name}_fts"
+            try:
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (fts_table,))
+                if cur.fetchone():
+                    fts_cols = [c for c in cols if table_cols[c]["type"].upper() in ("TEXT", "VARCHAR")]
+                    if fts_cols:
+                        fts_col_names = ", ".join([f"\"{c}\"" for c in fts_cols])
+                        fts_placeholders = ", ".join(["?"] * (len(fts_cols) + 1))
+                        fts_sql = f"INSERT INTO \"{fts_table}\" (rowid, {fts_col_names}) VALUES ({fts_placeholders});"
+                        cur.execute(fts_sql, [new_rowid] + [str(valid_data[c]) for c in fts_cols])
+            except Exception as fts_err:
+                logger.debug(f"FTS insert sync note on {table_name}: {fts_err}")
+
+            conn.commit()
+
+        # Invalidate caches
+        hot_cache.clear()
+        elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+
+        return {
+            "operation": "INSERT",
+            "table": table_name,
+            "status": "SUCCESS",
+            "inserted_id": new_id,
+            "record": valid_data,
+            "sql": sql,
+            "affected_rows": 1,
+            "elapsed_ms": round(elapsed_ms, 2)
+        }
+
+    def update_record(
+        self,
+        table_name: str,
+        filter_data: Dict[str, Any],
+        update_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Updates an existing record, captures Before/After diff, and synchronizes FTS index.
+        """
+        import time
+        start_t = time.perf_counter()
+
+        if not filter_data:
+            raise ValueError("Filter criteria required for safe update operation to avoid full-table overwrite.")
+        if not update_data:
+            raise ValueError("No update fields provided.")
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info(\"{table_name}\");")
+            table_cols = {r["name"]: r for r in cur.fetchall()}
+            if not table_cols:
+                raise ValueError(f"Table '{table_name}' does not exist.")
+
+            # Build WHERE clause
+            where_parts = [f"\"{k}\" = ?" for k in filter_data.keys() if k in table_cols]
+            where_vals = [filter_data[k] for k in filter_data.keys() if k in table_cols]
+            if not where_parts:
+                raise ValueError(f"Filter fields {list(filter_data.keys())} do not match table columns.")
+            where_sql = " AND ".join(where_parts)
+
+            # 1. Fetch BEFORE state
+            cur.execute(f"SELECT * FROM \"{table_name}\" WHERE {where_sql} LIMIT 1;", where_vals)
+            before_row = cur.fetchone()
+            if not before_row:
+                return {
+                    "operation": "UPDATE",
+                    "table": table_name,
+                    "status": "NOT_FOUND",
+                    "affected_rows": 0,
+                    "message": f"No record in '{table_name}' matched criteria: {filter_data}"
+                }
+
+            before_state = dict(before_row)
+
+            # 2. Build SET clause
+            valid_updates = {k: v for k, v in update_data.items() if k in table_cols}
+            if not valid_updates:
+                raise ValueError(f"No valid update columns provided. Table columns: {list(table_cols.keys())}")
+
+            set_parts = [f"\"{k}\" = ?" for k in valid_updates.keys()]
+            set_vals = [valid_updates[k] for k in valid_updates.keys()]
+            update_sql = f"UPDATE \"{table_name}\" SET {', '.join(set_parts)} WHERE {where_sql};"
+            cur.execute(update_sql, set_vals + where_vals)
+            affected = cur.rowcount
+
+            # 3. Fetch AFTER state
+            cur.execute(f"SELECT * FROM \"{table_name}\" WHERE {where_sql} LIMIT 1;", where_vals)
+            after_row = cur.fetchone()
+            after_state = dict(after_row) if after_row else {}
+
+            # Calculate field diff
+            diff = {}
+            for k in valid_updates.keys():
+                diff[k] = {
+                    "before": before_state.get(k),
+                    "after": after_state.get(k)
+                }
+
+            # Update FTS table if exists
+            fts_table = f"{table_name}_fts"
+            try:
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (fts_table,))
+                if cur.fetchone() and "rowid" in before_state:
+                    cur.execute(f"DELETE FROM \"{fts_table}\" WHERE rowid = ?;", (before_state["rowid"],))
+                    fts_cols = [c for c in table_cols if table_cols[c]["type"].upper() in ("TEXT", "VARCHAR")]
+                    if fts_cols:
+                        fts_col_names = ", ".join([f"\"{c}\"" for c in fts_cols])
+                        fts_placeholders = ", ".join(["?"] * (len(fts_cols) + 1))
+                        fts_sql = f"INSERT INTO \"{fts_table}\" (rowid, {fts_col_names}) VALUES ({fts_placeholders});"
+                        cur.execute(fts_sql, [before_state["rowid"]] + [str(after_state.get(c, "")) for c in fts_cols])
+            except Exception as fts_err:
+                logger.debug(f"FTS update sync note on {table_name}: {fts_err}")
+
+            conn.commit()
+
+        # Invalidate caches
+        hot_cache.clear()
+        elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+
+        return {
+            "operation": "UPDATE",
+            "table": table_name,
+            "status": "SUCCESS",
+            "affected_rows": affected,
+            "filter": filter_data,
+            "diff": diff,
+            "before": before_state,
+            "after": after_state,
+            "sql": update_sql,
+            "elapsed_ms": round(elapsed_ms, 2)
+        }
+
+    def delete_record(
+        self,
+        table_name: str,
+        filter_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Safely deletes a record by filter criteria and purges FTS index.
+        """
+        import time
+        start_t = time.perf_counter()
+
+        if not filter_data:
+            raise ValueError("Filter criteria required for safe deletion to prevent deleting entire table.")
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info(\"{table_name}\");")
+            table_cols = {r["name"]: r for r in cur.fetchall()}
+            if not table_cols:
+                raise ValueError(f"Table '{table_name}' does not exist.")
+
+            where_parts = [f"\"{k}\" = ?" for k in filter_data.keys() if k in table_cols]
+            where_vals = [filter_data[k] for k in filter_data.keys() if k in table_cols]
+            if not where_parts:
+                raise ValueError(f"Filter keys {list(filter_data.keys())} do not match table columns.")
+            where_sql = " AND ".join(where_parts)
+
+            # Snapshot deleted record
+            cur.execute(f"SELECT * FROM \"{table_name}\" WHERE {where_sql} LIMIT 1;", where_vals)
+            target = cur.fetchone()
+            if not target:
+                return {
+                    "operation": "DELETE",
+                    "table": table_name,
+                    "status": "NOT_FOUND",
+                    "affected_rows": 0,
+                    "message": f"No record in '{table_name}' matched criteria: {filter_data}"
+                }
+
+            deleted_record = dict(target)
+            rowid = deleted_record.get("rowid")
+
+            delete_sql = f"DELETE FROM \"{table_name}\" WHERE {where_sql};"
+            cur.execute(delete_sql, where_vals)
+            affected = cur.rowcount
+
+            # Remove from FTS
+            fts_table = f"{table_name}_fts"
+            try:
+                if rowid is not None:
+                    cur.execute(f"DELETE FROM \"{fts_table}\" WHERE rowid = ?;", (rowid,))
+            except Exception as fts_err:
+                logger.debug(f"FTS delete sync note on {table_name}: {fts_err}")
+
+            conn.commit()
+
+        hot_cache.clear()
+        elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+
+        return {
+            "operation": "DELETE",
+            "table": table_name,
+            "status": "SUCCESS",
+            "affected_rows": affected,
+            "deleted_record": deleted_record,
+            "sql": delete_sql,
+            "elapsed_ms": round(elapsed_ms, 2)
+        }
+
+    def query_tabular(
+        self,
+        table_name: str,
+        columns: Optional[List[str]] = None,
+        filter_condition: Optional[str] = None,
+        filter_params: Optional[List[Any]] = None,
+        order_by: Optional[str] = None,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Retrieves formatted tabular data for responsive table rendering.
+        """
+        import time
+        start_t = time.perf_counter()
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info(\"{table_name}\");")
+            all_cols = [r["name"] for r in cur.fetchall()]
+            if not all_cols:
+                raise ValueError(f"Table '{table_name}' does not exist.")
+
+            selected_cols = [c for c in (columns or all_cols) if c in all_cols] or all_cols
+            cols_sql = ", ".join([f"\"{c}\"" for c in selected_cols])
+
+            where_sql = f" WHERE {filter_condition}" if filter_condition else ""
+            order_sql = f" ORDER BY {order_by}" if order_by else ""
+            limit_sql = f" LIMIT {min(limit, 50)}"
+
+            sql = f"SELECT {cols_sql} FROM \"{table_name}\"{where_sql}{order_sql}{limit_sql};"
+            cur.execute(sql, filter_params or [])
+            rows = [dict(r) for r in cur.fetchall()]
+
+            # Total count
+            count_sql = f"SELECT COUNT(*) as cnt FROM \"{table_name}\"{where_sql};"
+            cur.execute(count_sql, filter_params or [])
+            total_count = cur.fetchone()["cnt"]
+
+        elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+
+        return {
+            "operation": "TABULAR",
+            "table": table_name,
+            "columns": selected_cols,
+            "records": rows,
+            "rows": [[r[c] for c in selected_cols] for r in rows],
+            "total_count": total_count,
+            "displayed_count": len(rows),
+            "sql": sql,
+            "elapsed_ms": round(elapsed_ms, 2)
+        }
 
     async def search_text_async(self, query: str, table_name: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
         """Non-blocking async wrapper for full-text search."""
@@ -489,6 +852,54 @@ class MultiTableWarehouseManager:
         """Non-blocking async wrapper for PK lookup."""
         return await asyncio.to_thread(self.get_record_by_id, table_name, id_value)
 
-    async def execute_aggregation_async(self, table_name: str, agg_func: str = "COUNT", column: str = "*") -> Dict[str, Any]:
+    async def execute_aggregation_async(
+        self,
+        table_name: str,
+        agg_func: str = "COUNT",
+        column: str = "*",
+        group_by: Optional[str] = None,
+        filter_condition: Optional[str] = None,
+        filter_params: Optional[List[Any]] = None
+    ) -> Dict[str, Any]:
         """Non-blocking async wrapper for aggregation."""
-        return await asyncio.to_thread(self.execute_aggregation, table_name, agg_func, column)
+        return await asyncio.to_thread(
+            self.execute_aggregation,
+            table_name,
+            agg_func,
+            column,
+            group_by,
+            filter_condition,
+            filter_params
+        )
+
+    async def insert_record_async(self, table_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Non-blocking async wrapper for insert."""
+        return await asyncio.to_thread(self.insert_record, table_name, data)
+
+    async def update_record_async(self, table_name: str, filter_data: Dict[str, Any], update_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Non-blocking async wrapper for update."""
+        return await asyncio.to_thread(self.update_record, table_name, filter_data, update_data)
+
+    async def delete_record_async(self, table_name: str, filter_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Non-blocking async wrapper for delete."""
+        return await asyncio.to_thread(self.delete_record, table_name, filter_data)
+
+    async def query_tabular_async(
+        self,
+        table_name: str,
+        columns: Optional[List[str]] = None,
+        filter_condition: Optional[str] = None,
+        filter_params: Optional[List[Any]] = None,
+        order_by: Optional[str] = None,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """Non-blocking async wrapper for tabular queries."""
+        return await asyncio.to_thread(
+            self.query_tabular,
+            table_name,
+            columns,
+            filter_condition,
+            filter_params,
+            order_by,
+            limit
+        )

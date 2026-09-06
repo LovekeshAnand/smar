@@ -30,6 +30,14 @@ class DynamicDomainDictionary:
         self.column_aliases: Dict[str, List[str]] = {}
         # Generic intent patterns (domain-agnostic)
         self.intent_signals = {
+            "OPERATION": [
+                "sum of", "total of", "sum", "average of", "average", "mean of",
+                "highest", "lowest", "maximum", "minimum", "max", "min",
+                "add new", "add entry", "insert into", "insert", "create record", "add row",
+                "update", "modify", "change", "set", "delete", "remove", "drop entry",
+                "table format", "show in table", "show table", "tabular", "list all",
+                "chart", "graph", "plot", "visualize", "picture format"
+            ],
             "QUANTITY": [
                 "how many", "how much", "quantity", "stock", "count", "available", "units",
                 "left", "balance", "kitna", "kitne", "kitni", "bacha", "bache", "bachi", "pada", "rakha"

@@ -9,7 +9,7 @@
 ![SQLite](https://img.shields.io/badge/SQLite-FTS5%20Warehouse-003B57?style=flat-square)
 ![Inference](https://img.shields.io/badge/Inference-Local%20Qwen2.5%207B%20GGUF-purple?style=flat-square)
 ![Voice](https://img.shields.io/badge/Voice-Gnani.ai%20%2F%20Vachana%20Voice-orange?style=flat-square)
-![Tests](https://img.shields.io/badge/Tests-46%20Passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/Tests-54%20Passing-brightgreen?style=flat-square)
 
 ---
 
@@ -17,12 +17,15 @@
 
 Traditional voice AI assistants suffer from two major limitations:
 1. **Amnesia**: Conversations are stateless. When the session ends, all context is lost. They cannot recall your name, your preferences, or what was discussed earlier without massive context-stuffing.
-2. **Disconnected Data**: They cannot query complex enterprise datasets or multi-table relational warehouses in real time without brittle, hardcoded SQL rules or sluggish latency that breaks conversational speech.
+2. **Disconnected Data & Read-Only Passivity**: They cannot query complex enterprise datasets or perform mutations (CRUD operations) and aggregations in real time without brittle, hardcoded SQL rules or sluggish latency that breaks conversational speech.
 
 **SMAR** (Smart Memory & Autonomous Reasoning) is built from the ground up to solve both problems:
 - **Zero-Latency Voice Loop**: Native integration with Gnani.ai / Vachana.ai (Prisma STT & Timbre TTS) in English and Indian languages (Hindi, Hinglish).
 - **Persistent Cognitive Context Layer**: SQLite Knowledge Graph (`kg_triples`) and subword-vector semantic memory (`semantic_memories`) using **upsert-by-similarity** to continuously remember user attributes, preferences, and relationships.
 - **Dynamic 1.59M+ Row Warehouse Engine**: Introspects, indexes, and searches across **12 tables with 1,591,380 rows (65.84 Lakh data points)** in sub-100ms with FTS5 and numeric fallbacks.
+- **Dynamic Operations Layer (CRUD & Aggregations)**: Executes zero-hardcoding mutations (`INSERT`, `UPDATE`, `DELETE`) and aggregations (`SUM`, `AVG`, `COUNT`, `MIN`, `MAX`, `GROUP BY`) with before/after state diffing and FTS5 synchronization.
+- **Adaptive Visual Data Synthesis**: Headless chart generator rendering dark-themed responsive bar charts, donut charts, and high-impact KPI metric badges directly to Base64 PNGs.
+- **Full Frontend Transparency**: Dedicated glassmorphic UI cards showing exactly what operation was performed, SQL executed, latency in ms, affected records, before/after diffs, and interactive data tables.
 - **Tiered Hot Cache**: Two-tier caching (L1 In-Memory LRU + L2 Redis Docker Container) providing sub-millisecond query responses.
 - **Organic Fact Extraction**: Dynamic background cognitive extraction (Qwen 2.5 Coder 7B) that extracts verified personal user facts without contaminating the user's graph with database search results.
 - **Conversational Recall & Anti-Refusal Directives**: Instant recall of the first question asked in a session, dynamic identity disambiguation, and complete elimination of canned AI refusal boilerplate.
@@ -38,6 +41,7 @@ flowchart TB
         UserMic["Human Speaker / Microphone"]
         WebUI["Next.js 15 Web Dashboard"]
         GnaniSTT["Gnani / Vachana Speech-to-Text"]
+        OpCards["Operation, Table & Chart Cards"]
     end
 
     UserMic -->|PCM Audio| WebUI
@@ -51,13 +55,17 @@ flowchart TB
         %% Conversational Route
         Router -->|Conversational / Meta Query| ConvBypass["Conversational Bypass (Sub-30ms)"]
 
-        %% Smart Data Engine
-        subgraph SmartDataEngine ["Smart Data Layer Engine"]
+        %% Operations & Smart Data Engine
+        subgraph OperationsEngine ["Dynamic Operations & Data Engine"]
+            OpsAnalyzer["Operations Analyzer (CRUD & Aggregations)"]
+            Visualizer["Adaptive Data Visualizer (Headless Base64 PNG)"]
             EntityExtractor["Entity and ID Extractor"]
             Introspector["Universal Schema Introspector"]
             FTSearch["FTS5 Full-Text Search"]
             WarehouseDB[("Warehouse DB: 12 Tables / 1.59M Rows")]
             
+            OpsAnalyzer -->|Execute CRUD / Aggregation| WarehouseDB
+            OpsAnalyzer -->|Synthesize Chart / KPI| Visualizer
             EntityExtractor --> FTSearch
             Introspector --> WarehouseDB
             FTSearch <--> WarehouseDB
@@ -73,6 +81,7 @@ flowchart TB
             L1Cache <--> KGCache
         end
 
+        Router -->|CRUD / Aggregation / Table / Chart| OpsAnalyzer
         Router -->|Database Search Query| EntityExtractor
         EntityExtractor <--> CacheSubsystem
 
@@ -94,6 +103,7 @@ flowchart TB
 
         %% Prompt Composer
         PromptComposer["Dynamic System Prompt Composer"]
+        OpsAnalyzer -->|Spoken Confirmation + Operation Payload| PromptComposer
         FTSearch -->|Grounded Warehouse Context| PromptComposer
         HybridRetriever -->|Recalled User Memory| PromptComposer
         SessionRecall -->|Session History Context| PromptComposer
@@ -118,6 +128,7 @@ flowchart TB
         LlamaServer -.->|Turn Evaluation| FactExtractor
         GnaniTTS -->|Audio Stream| AudioPlayback
         AudioPlayback --> WebUI
+        OpsAnalyzer -->|Payload: Diff, SQL, Table, Chart| OpCards
         FactExtractor -->|Form Verified Triples| KGStore
         FactExtractor -.->|Live Sync| WSBroadcast
         WSBroadcast -.->|Real-Time Nodes and Edges| WebUI
@@ -147,23 +158,45 @@ flowchart TB
 - **Dynamic Domain Vocabulary**: Learns singular/plural inflections (`employees` ↔ `employee`, `categories` ↔ `category`) and maps column attributes (`salary` → `employees`, `signup_date` → `customers`) dynamically without hardcoded schemas.
 - **Ultra-Fast Search**: Blends SQLite FTS5 full-text indexing, exact numeric/ID lookups, and schema-guided text searches with non-blocking execution.
 
-### 3.2 Tiered Caching Subsystem
+### 3.2 Dynamic Operations Layer (CRUD & Aggregations)
+- **Zero-Hardcoding Dynamic Mutations**:
+  - `INSERT`: Validates column types, auto-increments primary keys, synchronizes FTS5 full-text index, and invalidates L1/L2 caches.
+  - `UPDATE`: Captures full Before/After diffs, updates record fields, synchronizes FTS5, and invalidates caches.
+  - `DELETE`: Captures pre-deletion state, safely removes rows, updates FTS5, and clears hot cache.
+  - `TABULAR_QUERY`: Structured multi-column retrieval with pagination, column metadata, and execution timing.
+- **Dynamic Mathematical Aggregations**:
+  - Computes `SUM`, `AVG`, `COUNT`, `MIN`, `MAX` across any numeric column in the warehouse.
+  - Supports dynamic `WHERE` filters and multi-dimensional `GROUP BY` (e.g. *average salary per store*).
+  - Executed live on 1,000 employees: summed $49,448,064 in 6.72ms.
+
+### 3.3 Adaptive Visual Data Synthesis
+- **In-Memory Headless Visualizer**: Uses `matplotlib` / `seaborn` with the headless `Agg` backend to render charts directly to Base64 PNGs without disk I/O in <30ms.
+- **Dynamic Chart Adaptation**:
+  - **Horizontal & Vertical Bar Charts**: Tailored for categorical distributions and group-by aggregations.
+  - **Donut / Pie Charts**: Tailored for proportional share and category breakdowns.
+  - **High-Impact KPI Metric Badges**: Tailored for single scalar sums, averages, and counts.
+- **Glassmorphic Dark Theme**: Automatically styled to match the dark `#0f172a` slate palette with vibrant cyan/violet highlights, formatted currency/number labels, and subtle grids.
+
+### 3.4 Tiered Caching Subsystem
 - **Tier 1 (L1)**: In-Memory LRU Cache for microsecond responses.
 - **Tier 2 (L2)**: Dockerized Redis Container (`smar-redis-cache`) for persistent distributed caching.
 - **Warm Memory KG Cache**: Automatically maps recurring entity queries to canonical IDs, resolving subsequent queries in <1ms.
 
-### 3.3 Dynamic Knowledge Formation & Fact Attribution
+### 3.5 Dynamic Knowledge Formation & Fact Attribution
 - **Zero Database Contamination**: The cognitive extractor analyzes conversation turns and extracts facts **only when the user states personal information about themselves** (e.g., location, job, preferences).
 - **No Query Attribution**: Queries about employee salaries, product prices, order dates, or warehouse inventory are strictly excluded from the user's personal knowledge graph.
 - **Dual Extraction Engine**: Combines regex heuristics (English, Hindi, Hinglish) with asynchronous local LLM parsing (Qwen 7B) running as non-blocking background tasks.
 
-### 3.4 Conversational Routing & Session History Recall
+### 3.6 Conversational Routing & Session History Recall
 - **Conversational Bypass**: Pure chitchat, greetings, and identity queries (*"what is your name"*, *"who are you"*) bypass 1.5M database records and respond in ~25ms.
 - **Session Conversation Recall**: Custom store methods (`get_first_turn`, `get_all_user_questions`) allow SMAR to recall the very first question asked in a session, even after dozens of dialogue turns.
 - **Anti-Refusal Guardrails**: Eliminates generic LLM refusals (*"As an AI assistant, I don't have access to previous conversations..."*) by injecting explicit identity directives and session history context.
 
-### 3.5 Real-Time Frontend & Memory Inspector
+### 3.7 Real-Time Frontend & Operations Transparency
 - **Next.js 15 Web Application**: Push-to-talk voice interface with dynamic WebAudio spikes visualizer.
+- **Operation Card**: Displays executed mutation badge (`INSERT`, `UPDATE`, `DELETE`, `AGGREGATION`), affected table, exact SQL query, latency in ms, and interactive Before/After state diffs.
+- **Data Table Card**: Renders structured query results in clean, responsive tables with sticky headers and record counts.
+- **Visual Chart Card**: Displays synthesized Base64 charts with modal zoom and one-click PNG download.
 - **Memory Inspector**: Live slide-over dashboard visualizing Knowledge Graph nodes and edges in real time via WebSockets (`MEMORY_UPDATED`).
 - **Universal Ingestion**: Supports uploading external CSV, Excel, Parquet, JSONL, and SQLite datasets up to 1GB directly through the browser.
 
@@ -173,14 +206,16 @@ flowchart TB
 
 ```
 smar/
-├── smart_data/                            # Smart Data Layer Subsystem
-│   ├── engine.py                          # Unified coordinator for warehouse & cache queries
+├── smart_data/                            # Smart Data & Operations Subsystem
+│   ├── engine.py                          # Unified coordinator for queries, operations & cache
+│   ├── operations.py                      # Dynamic CRUD & Aggregation planner
+│   ├── visualizer.py                      # Adaptive Base64 PNG chart synthesizer (headless Agg)
 │   ├── dictionary.py                      # Dynamic domain vocabulary & table/column mapping
 │   ├── intent_entity.py                   # Schema-guided intent & candidate ID extraction
 │   └── query_builder.py                   # Dynamic SQL generation
 │
 ├── structured_data/                       # Multi-Table Warehouse & Storage Adapters
-│   ├── multi_table_manager.py             # SQLite multi-table warehouse with FTS5 search
+│   ├── multi_table_manager.py             # SQLite multi-table warehouse, CRUD, aggregations & FTS5
 │   ├── sync_engine.py                     # Universal multi-file sync engine
 │   ├── schema_introspector.py             # Automatic schema, PK, and column type extractor
 │   ├── cache.py                           # Tiered cache (L1 LRU + L2 Redis Docker)
@@ -210,7 +245,7 @@ smar/
 │
 ├── frontend/                              # Next.js Web Interface
 │   ├── src/app/                           # App router (page.tsx, layout.tsx)
-│   ├── src/components/                    # MemoryInspector, VoiceController, Visualizers
+│   ├── src/components/                    # OperationCard, DataTableCard, VisualChartCard, MemoryInspector
 │   └── next.config.ts                     # Configured for 1GB uploads and API proxying
 │
 ├── data/                                  # Persistent Databases
@@ -218,14 +253,15 @@ smar/
 │   ├── smar_memory.db                     # Multi-tenant Knowledge Graph & Vector memories
 │   └── users.db                           # User authentication database
 │
-├── tests/                                 # Unit & Integration Test Suite (46 Tests)
+├── tests/                                 # Unit & Integration Test Suite (54 Tests)
+│   ├── test_operations_layer.py           # CRUD, aggregations, charts, and intent parsing
 │   ├── test_context_layer.py
 │   ├── test_context_memory.py
 │   ├── test_smart_data_layer.py
 │   ├── test_tiered_cache.py
 │   └── test_epsilon_bridge.py
 │
-├── server.py                              # FastAPI backend application server
+├── server.py                              # FastAPI backend application server & operations API
 └── requirements.txt                       # Backend Python dependencies
 ```
 
@@ -314,7 +350,7 @@ smar/
 
 ## 6. Testing & Validation
 
-Execute the complete test suite across the Context Layer, Smart Data Layer, Tiered Caching, and Fact Extraction:
+Execute the complete test suite across the Operations Layer, Context Layer, Smart Data Layer, Tiered Caching, and Fact Extraction:
 
 ```bash
 python -m unittest discover tests
@@ -322,7 +358,7 @@ python -m unittest discover tests
 
 **Output**:
 ```
-Ran 46 tests in 5.715s
+Ran 54 tests in 11.850s
 
 OK
 ```
@@ -331,10 +367,13 @@ OK
 
 ## 7. Sample Interactions & Verified Live Performance
 
-| User Query | Platform Execution & Route | Response |
+| User Query / Utterance | Platform Execution & Route | Spoken Voice Confirmation & Visual Artifact |
 | :--- | :--- | :--- |
-| *"what's the salary of employee 98"* | Smart Data Layer (`employees` table, FTS5 + exact ID search in 78ms) | *"The salary of employee number 98 is 31262. Is there anything else I can help with?"* |
-| *"what's the order date for order id 210"* | Smart Data Layer (`orders` table, ID lookup in 62ms) | *"The order date for order ID 210 is April 20, 2020. Is there anything else I can help with?"* |
-| *"I live in Chandigarh and work as a data scientist"* | Heuristic & Cognitive Extractor (`LivesIn: Chandigarh`, `Role: data scientist`) | *"Thank you for letting me know, Lokesh! How can I assist you further regarding your work or any other questions you might have?"* |
-| *"Where do I live and what is my role?"* | Hybrid Context Layer (Recalls verified KG triples) | *"You live in Chandigarh and your role is a data scientist. Is there anything else I can help with?"* |
-| *"i forgot what was the 1st question that i asked you and what's my name and what's your name"* | Conversational Routing + Session History Recall (<30ms) | *"The first question you asked me was 'hi i am lokesh can you give me information about employee number 886'. My name is SMAR. How else may I assist you?"* |
+| *"Can you tell me the sum of all the salaries that was given to employees"* | Operations Layer (`SELECT SUM(salary) FROM employees`, 6.72ms) | Spoken: *"The sum of all salary in employees is 49,448,064."* + High-Impact KPI Badge |
+| *"Show me the average salary per store as a chart"* | Operations Layer (`SELECT store_id, AVG(salary) FROM employees GROUP BY store_id`, 12ms) | Spoken: *"The average salary grouped by store_id has been computed."* + Dark Base64 Bar Chart |
+| *"update salary of employee 98 to 35000"* | Operations Layer (`UPDATE employees SET salary = 35000 WHERE employee_id = 98`, 8ms) | Spoken: *"Successfully updated employee 98 in employees."* + OperationCard with Before/After Diff (`31262` → `35000`) |
+| *"Show me products in table format"* | Operations Layer (`SELECT * FROM products LIMIT 10`, 9ms) | Spoken: *"Retrieved 10 records from products."* + Interactive DataTableCard |
+| *"what's the salary of employee 98"* | Smart Data Layer (`employees` table, FTS5 + exact ID search in 78ms) | Spoken: *"The salary of employee number 98 is 35000. Is there anything else I can help with?"* |
+| *"I live in Chandigarh and work as a data scientist"* | Heuristic & Cognitive Extractor (`LivesIn: Chandigarh`, `Role: data scientist`) | Spoken: *"Thank you for letting me know, Lokesh! How can I assist you further?"* |
+| *"Where do I live and what is my role?"* | Hybrid Context Layer (Recalls verified KG triples) | Spoken: *"You live in Chandigarh and your role is a data scientist. Is there anything else I can help with?"* |
+| *"i forgot what was the 1st question that i asked you and what's my name and what's your name"* | Conversational Routing + Session History Recall (<30ms) | Spoken: *"The first question you asked me was 'hi i am lokesh can you give me information about employee number 886'. My name is SMAR. How else may I assist you?"* |

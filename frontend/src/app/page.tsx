@@ -290,6 +290,9 @@ export default function Home() {
         text: data.reply,
         timestamp: "Now",
         audioBase64: data.audio_base64,
+        operationDetails: data.operation_details || data.smart_data?.operation_details || null,
+        tableData: data.table_data || data.smart_data?.table_data || null,
+        visualChart: data.visual_chart || data.smart_data?.visual_chart || null,
       };
 
       setMessages((prev) => [...prev, userMsg, asstMsg]);
@@ -340,6 +343,9 @@ export default function Home() {
         text: data.reply,
         timestamp: "Now",
         audioBase64: data.audio_base64,
+        operationDetails: data.operation_details || data.smart_data?.operation_details || null,
+        tableData: data.table_data || data.smart_data?.table_data || null,
+        visualChart: data.visual_chart || data.smart_data?.visual_chart || null,
       };
 
       setMessages((prev) => [...prev, asstMsg]);

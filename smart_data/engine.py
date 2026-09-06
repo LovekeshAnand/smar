@@ -23,6 +23,8 @@ from typing import Dict, Any, List, Optional
 from .dictionary import DynamicDomainDictionary
 from .intent_entity import SmartIntentEntityExtractor
 from .query_builder import SmartQueryBuilder
+from .operations import OperationsAnalyzer
+from .visualizer import AdaptiveDataVisualizer
 from structured_data.adapters.registry import AdapterRegistry
 from structured_data.adapters.base import BaseStorageAdapter
 from structured_data.schema_introspector import SchemaIntrospector
@@ -51,6 +53,11 @@ class SmartDataLayerEngine:
         self.intent_extractor = SmartIntentEntityExtractor(domain_dict=self.domain_dict)
         self.query_builder = SmartQueryBuilder()
         self.schema_introspector = SchemaIntrospector(context_store=self.context_store)
+        self.operations_analyzer = OperationsAnalyzer(
+            warehouse_manager=self.warehouse_manager,
+            domain_dict=self.domain_dict
+        )
+        self.visualizer = AdaptiveDataVisualizer()
 
         # Universal Sync Engine
         self.sync_engine = UniversalDataSyncEngine(
@@ -181,6 +188,103 @@ class SmartDataLayerEngine:
                 "spoken_confirmation": "",
                 "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
             }
+
+        # Step 2A: Check for Operations (Aggregations, CRUD Mutations, Tabular Views)
+        if self.operations_analyzer.is_operation_query(user_text):
+            plan = self.operations_analyzer.parse_plan(user_text, tables_list)
+            if plan:
+                op_type = plan.get("operation")
+                op_res: Dict[str, Any] = {}
+                spoken_response = ""
+                context_str = ""
+                chart = None
+
+                try:
+                    if op_type == "AGGREGATION":
+                        op_res = self.warehouse_manager.execute_aggregation(
+                            table_name=plan["table"],
+                            agg_func=plan["function"],
+                            column=plan["column"],
+                            group_by=plan.get("group_by")
+                        )
+                        if plan.get("wants_visual") or plan.get("group_by"):
+                            chart = self.visualizer.generate_chart_for_operation(op_res)
+
+                        col_disp = plan['column'].replace('_', ' ')
+                        if plan.get("group_by"):
+                            grp_disp = plan['group_by'].replace('_', ' ')
+                            spoken_response = f"Here is the {plan['function'].lower()} of {col_disp} grouped by {grp_disp} across {plan['table']}."
+                            context_str = f"[Verified Aggregation Result]: {plan['function']} of {col_disp} grouped by {grp_disp} on table '{plan['table']}'. Breakdown: {op_res.get('breakdown')} (SQL: {op_res.get('sql')})"
+                        else:
+                            val_disp = op_res.get("formatted_value", op_res.get("value"))
+                            spoken_response = f"The {plan['function'].lower()} of {col_disp} in {plan['table']} is {val_disp}."
+                            context_str = f"[Verified Aggregation Result]: {plan['function']}({col_disp}) on table '{plan['table']}' = {val_disp} across {op_res.get('total_rows_evaluated', 0)} rows (SQL: {op_res.get('sql')})"
+
+                    elif op_type == "INSERT":
+                        op_res = self.warehouse_manager.insert_record(
+                            table_name=plan["table"],
+                            data=plan["data"]
+                        )
+                        new_id = op_res.get("inserted_id")
+                        spoken_response = f"Successfully added a new record into {plan['table']} with ID {new_id}."
+                        context_str = f"[Database Insert Executed]: Added new record into '{plan['table']}' with ID {new_id} (SQL: {op_res.get('sql')})"
+
+                    elif op_type == "UPDATE":
+                        op_res = self.warehouse_manager.update_record(
+                            table_name=plan["table"],
+                            filter_data=plan["filter"],
+                            update_data=plan["updates"]
+                        )
+                        if op_res.get("status") == "SUCCESS":
+                            diff_strs = [f"{k} changed to {v.get('after')}" for k, v in op_res.get("diff", {}).items()]
+                            filter_str = ", ".join([f"{k} {v}" for k, v in plan["filter"].items()])
+                            spoken_response = f"Successfully updated {plan['table']} ({filter_str}): {', '.join(diff_strs)}."
+                            context_str = f"[Database Update Executed]: Updated '{plan['table']}' ({filter_str}): {', '.join(diff_strs)} (SQL: {op_res.get('sql')})"
+                        else:
+                            spoken_response = f"Could not find any record in {plan['table']} matching {plan['filter']} to update."
+                            context_str = f"[Database Update Notice]: Record not found in '{plan['table']}'."
+
+                    elif op_type == "DELETE":
+                        op_res = self.warehouse_manager.delete_record(
+                            table_name=plan["table"],
+                            filter_data=plan["filter"]
+                        )
+                        if op_res.get("status") == "SUCCESS":
+                            filter_str = ", ".join([f"{k} {v}" for k, v in plan["filter"].items()])
+                            spoken_response = f"Successfully removed record from {plan['table']} matching {filter_str}."
+                            context_str = f"[Database Delete Executed]: Deleted record from '{plan['table']}' matching {filter_str} (SQL: {op_res.get('sql')})"
+                        else:
+                            spoken_response = f"No matching record found in {plan['table']} to delete."
+                            context_str = f"[Database Delete Notice]: Record not found in '{plan['table']}' to delete."
+
+                    elif op_type == "TABULAR":
+                        op_res = self.warehouse_manager.query_tabular(
+                            table_name=plan["table"],
+                            limit=plan.get("limit", 10)
+                        )
+                        if plan.get("wants_visual"):
+                            chart = self.visualizer.generate_chart_for_operation(op_res)
+                        spoken_response = f"Displaying {op_res.get('displayed_count')} records from {plan['table']} in table format."
+                        context_str = f"[Verified Tabular Query]: Retrieved {op_res.get('displayed_count')} rows from '{plan['table']}' (Total: {op_res.get('total_count')}, SQL: {op_res.get('sql')})"
+
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                    return {
+                        "intent": "OPERATION",
+                        "operation": op_type,
+                        "operation_details": op_res,
+                        "table_data": op_res if op_type == "TABULAR" else None,
+                        "visual_chart": chart,
+                        "search_query": user_text,
+                        "kg_cache_hit": False,
+                        "hot_cache_hit": False,
+                        "matched_item": None,
+                        "all_results": op_res.get("records", []) if op_type == "TABULAR" else [],
+                        "context_string": context_str,
+                        "spoken_confirmation": spoken_response,
+                        "elapsed_ms": elapsed_ms
+                    }
+                except Exception as op_err:
+                    logger.error(f"Error executing operation plan: {op_err}")
 
         # Check Hot Cache for entity resolution
         if not resolved_item_id and search_query:
@@ -356,6 +460,10 @@ class SmartDataLayerEngine:
 
         result_payload = {
             "intent": intent,
+            "operation": None,
+            "operation_details": None,
+            "table_data": None,
+            "visual_chart": None,
             "search_query": search_query,
             "kg_cache_hit": kg_cache_hit,
             "hot_cache_hit": False,
