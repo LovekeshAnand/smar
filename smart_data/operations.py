@@ -50,13 +50,24 @@ class OperationsAnalyzer:
 
     TABULAR_KEYWORDS = [
         "table format", "show in table", "show table", "list all", "tabular",
-        "display table", "in table", "show records", "view table", "list table"
+        "display table", "in table", "in a table", "as a table", "show records",
+        "view table", "list table", "show me all", "display all", "show all",
+        "browse table", "all records", "in tabular format", "table view", "all rows"
     ]
 
     VISUAL_KEYWORDS = [
         "chart", "graph", "picture", "plot", "visualize", "visualization",
         "diagram", "chitra", "tasveer", "picture format", "show visually"
     ]
+
+    WORD_TO_NUM = {
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+        "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+        "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+        "eighty": 80, "ninety": 90, "hundred": 100
+    }
 
     def __init__(self, warehouse_manager=None, domain_dict=None):
         self.warehouse_manager = warehouse_manager
@@ -74,11 +85,15 @@ class OperationsAnalyzer:
         # Check for aggregation signals
         for agg_func, keywords in self.AGG_KEYWORDS.items():
             if any(kw in lower for kw in keywords):
-                # Ensure it's not a generic point question like "what is the salary of employee 98"
                 if agg_func in ["SUM", "AVG", "MIN", "MAX"]:
                     return True
-                if agg_func == "COUNT" and any(k in lower for k in ["count of", "total count", "number of", "how many total", "how many records"]):
-                    return True
+                if agg_func == "COUNT":
+                    # "how many" is always a COUNT operation (not just point-lookup)
+                    if any(k in lower for k in ["count of", "total count", "number of", "how many records", "how many total"]):
+                        return True
+                    # "how many X" where X is a table/domain entity => COUNT
+                    if "how many" in lower:
+                        return True
 
         # Check for tabular view
         if any(kw in lower for kw in self.TABULAR_KEYWORDS):
@@ -247,33 +262,73 @@ class OperationsAnalyzer:
         active_table = table_obj["table_name"] if table_obj else "data"
         columns = table_obj.get("columns", []) if table_obj else []
 
-        # Find numeric column candidate
-        target_col = "*"
+        # Partition columns into metric measures (non-ID numeric) vs identifier/dimension columns
         numeric_cols = [c["name"] for c in columns if any(t in str(c.get("type", "")).upper() for t in ["INT", "REAL", "FLOAT", "DOUBLE", "NUM"])]
+        metric_cols = [c for c in numeric_cols if not c.lower().endswith("id") and c.lower() != "id"]
+        id_cols = [c["name"] for c in columns if c["name"].lower().endswith("id") or c["name"].lower() == "id"]
 
-        # Try to find specific column mentioned in text
-        for c in columns:
-            cname = c["name"].lower()
-            if cname in clean or cname.replace("_", " ") in clean:
-                target_col = c["name"]
-                break
+        clean_lower = clean.lower()
+        target_col = None
 
-        if target_col == "*" and numeric_cols:
-            # Check domain keywords for common numeric metrics
-            if any(w in clean for w in ["salary", "pay", "compensation", "wage"]) and "salary" in numeric_cols:
-                target_col = "salary"
-            elif any(w in clean for w in ["price", "cost", "mrp", "rate", "amount"]) and any(c in numeric_cols for c in ["amount", "price", "unit_price", "cost"]):
-                target_col = next(c for c in numeric_cols if c in ["amount", "price", "unit_price", "cost"])
-            elif any(w in clean for w in ["quantity", "stock", "qty"]) and any(c in numeric_cols for c in ["quantity", "qty", "stock"]):
-                target_col = next(c for c in numeric_cols if c in ["quantity", "qty", "stock"])
-            elif any(w in clean for w in ["refund"]) and "refund" in numeric_cols:
-                target_col = "refund"
-            elif any(w in clean for w in ["discount"]) and "discount" in numeric_cols:
-                target_col = "discount"
-            else:
-                # Default to first non-ID numeric column if doing SUM/AVG
-                non_id_numerics = [c for c in numeric_cols if not c.lower().endswith("id")]
-                target_col = non_id_numerics[0] if non_id_numerics else numeric_cols[0]
+        # For COUNT: Default to '*' (all entities) unless a specific metric column is explicitly requested
+        if agg_name == "COUNT":
+            for c in metric_cols:
+                cname = c.lower()
+                c_phrase = cname.replace("_", " ")
+                if cname in clean_lower.split() or c_phrase in clean_lower:
+                    target_col = c
+                    break
+            if not target_col:
+                target_col = "*"
+        else:
+            # For mathematical operations (SUM, AVG/MEAN, MIN, MAX):
+            # Step 1: Check if a column is explicitly named immediately after the aggregation word
+            # e.g., "mean of salaries", "average of the salary", "sum of amounts", "max of price"
+            agg_target_m = re.search(
+                r"(?:sum|total|avg|average|mean|min|minimum|max|maximum)\s+(?:of|in)?\s+(?:the\s+)?([a-z_]+)",
+                clean_lower
+            )
+            if agg_target_m:
+                raw_word = agg_target_m.group(1).rstrip("s")
+                if raw_word.endswith("ie"):
+                    raw_word = raw_word[:-2] + "y"  # "salaries" -> "salary"
+                for c in metric_cols:
+                    cname = c.lower().rstrip("s")
+                    if cname.endswith("ie"):
+                        cname = cname[:-2] + "y"
+                    if raw_word == cname or raw_word in c.lower() or c.lower() in agg_target_m.group(1):
+                        target_col = c
+                        break
+
+            # Step 2: Check if any metric column (or its plural) appears anywhere in the clean query
+            if not target_col:
+                for c in metric_cols:
+                    cname = c.lower()
+                    plural = cname + "s" if not cname.endswith("y") else cname[:-1] + "ies"
+                    if cname in clean_lower.split() or plural in clean_lower.split() or cname.replace("_", " ") in clean_lower:
+                        target_col = c
+                        break
+
+            # Step 3: Check dynamic domain dictionary synonyms (e.g. wage/pay -> salary, cost -> price)
+            if not target_col and self.domain_dict and hasattr(self.domain_dict, "synonyms"):
+                for c in metric_cols:
+                    syns = self.domain_dict.synonyms.get(c.lower(), [])
+                    if any(s in clean_lower.split() for s in syns):
+                        target_col = c
+                        break
+
+            # Step 4: Explicit request for ID aggregation (only if user explicitly says e.g. "average of employee id")
+            if not target_col:
+                for c in id_cols:
+                    cname = c.lower()
+                    c_phrase = cname.replace("_", " ")
+                    if f"of {cname}" in clean_lower or f"of {c_phrase}" in clean_lower:
+                        target_col = c
+                        break
+
+            # Step 5: Fallback to first metric measure column (NEVER default to an ID column)
+            if not target_col:
+                target_col = metric_cols[0] if metric_cols else (numeric_cols[0] if numeric_cols else "*")
 
         # Check for GROUP BY (e.g. "per store", "by city", "each category", "store wise")
         group_by_col = None
@@ -297,12 +352,76 @@ class OperationsAnalyzer:
             elif "status" in clean and any(c["name"] == "status" for c in columns):
                 group_by_col = "status"
 
+        # Check for range or filter conditions (e.g. "from 30 to 40", "range of employee id 30 to 40", "between 1 and 10")
+        filter_cond = None
+        filter_params = None
+        filter_desc = None
+
+        # Identify primary key or default identifier column
+        pk_col = next((c["name"] for c in columns if c.get("pk")), None)
+        if not pk_col:
+            pk_col = next((c["name"] for c in columns if c["name"].lower().endswith("id")), columns[0]["name"] if columns else "id")
+
+        # Normalize word numbers to digits in clean text
+        norm_text = clean
+        for w, d in self.WORD_TO_NUM.items():
+            norm_text = re.sub(rf"\b{w}\b", str(d), norm_text)
+
+        # 1. RANGE FILTER: Always evaluate range first so numbers aren't greedily consumed as single IDs
+        # Matches "range of employee id 30 to 40", "from 30 to 40", "between 30 and 40", "30 to 40"
+        range_m = re.search(r'(?:range\s+(?:of\s+)?|between\s+|from\s+)?(?:[a-z_]+\s+)*?(\d+)\s*(?:to|and|-)\s*(\d+)\b', norm_text)
+        if range_m:
+            start_val, end_val = int(range_m.group(1)), int(range_m.group(2))
+            # Determine which column the range applies to
+            range_col = pk_col
+            text_around_range = norm_text[:range_m.start() + len(range_m.group(0))]
+            for c in columns:
+                cname = c["name"].lower()
+                c_phrase = cname.replace("_", " ")
+                if cname in text_around_range or c_phrase in text_around_range:
+                    range_col = c["name"]
+                    break
+            filter_cond = f'"{range_col}" BETWEEN ? AND ?'
+            filter_params = [start_val, end_val]
+            filter_desc = f"{range_col} from {start_val} to {end_val}"
+        else:
+            # 2. Limit / Top N (e.g. "first 10", "top 5")
+            first_m = re.search(r"(?:first|top)\s+(\d+)", norm_text)
+            if first_m:
+                limit_val = int(first_m.group(1))
+                filter_cond = f'"{pk_col}" <= ?'
+                filter_params = [limit_val]
+                filter_desc = f"first {limit_val} records"
+            else:
+                # 3. Specific entity filter: "for/of order|employee|customer id X"
+                entity_filter_m = re.search(
+                    r"(?:for|of|in|where|with)\s+([a-z_]+)?\s*(?:id|no\.?|number|#)?\s*(\d+)\b",
+                    norm_text
+                )
+                if entity_filter_m:
+                    filter_val = int(entity_filter_m.group(2))
+                    fk_match = None
+                    keyword = (entity_filter_m.group(1) or "").rstrip("s").lower()
+                    if keyword:
+                        for c in columns:
+                            if keyword in c["name"].lower() and c["name"].lower().endswith("id"):
+                                fk_match = c["name"]
+                                break
+                    if not fk_match:
+                        fk_match = pk_col
+                    filter_cond = f'"{fk_match}" = ?'
+                    filter_params = [filter_val]
+                    filter_desc = f"{fk_match} = {filter_val}"
+
         return {
             "operation": "AGGREGATION",
             "function": agg_name,
             "table": active_table,
             "column": target_col,
             "group_by": group_by_col,
+            "filter_condition": filter_cond,
+            "filter_params": filter_params,
+            "filter_description": filter_desc,
             "wants_visual": wants_visual or (group_by_col is not None)
         }
 

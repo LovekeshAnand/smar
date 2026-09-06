@@ -265,37 +265,88 @@ async def process_chat(req: ChatRequest):
 
     # Assemble rich context: database grounded inventory facts + personal user memory
     context_blocks = []
+
+    # Numbers found in the verified DB record — used to detect conflicting past notes
+    verified_numbers: set = set()
     if inventory_context:
-        context_blocks.append(inventory_context)
+        import re as _re
+        verified_numbers = set(_re.findall(r'\b\d{2,}\b', inventory_context))
+        # Prefix with absolute ground-truth instruction so LLM always uses DB data
+        grounded_context = (
+            "[DATABASE GROUND TRUTH — USE ONLY THESE NUMBERS FOR PRICES, IDs, AND QUANTITIES. "
+            "Ignore any conflicting numbers from past notes or conversation history.]\n"
+            + inventory_context
+        )
+        context_blocks.append(grounded_context)
+
     if structured_facts:
         context_blocks.append("[Personal User Knowledge]:\n" + "\n".join(f"- {f}" for f in structured_facts))
+
     if semantic_memories:
-        context_blocks.append("[Recalled Past Notes & Context]:\n" + "\n".join(f"- {m}" for m in semantic_memories))
+        # Filter out stale past notes that contain numeric values conflicting with the verified record
+        clean_memories = []
+        for m in semantic_memories:
+            if verified_numbers:
+                # If this memory contains DB-like numbers that conflict with the verified record, skip it
+                mem_numbers = set(_re.findall(r'\b\d{4,}\b', m))
+                if mem_numbers and not mem_numbers.issubset(verified_numbers):
+                    # Memory has different large numbers — potentially stale/conflicting data
+                    continue
+            clean_memories.append(m)
+        if clean_memories:
+            context_blocks.append("[Recalled Personal Notes]:\n" + "\n".join(f"- {m}" for m in clean_memories))
+
     context_summary = "\n\n".join(context_blocks) if context_blocks else None
 
-    # 2. Query Epsilon LLM with dynamic identity, recalled context, and multi-turn history
-    try:
-        reply_text = await epsilon_bridge.generate_reply(
-            user_prompt=user_text,
-            context=context_summary,
-            system_prompt=system_prompt,
-            conversation_history=recent_turns,
-            max_tokens=256
-        )
-    except Exception as e:
-        logger.error(f"Epsilon generation error: {e}")
-        reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
+    # 2. Determine reply text: for operations or verified grounded database results, use authoritative calculation directly to avoid LLM hallucination
+    if smart_res.get("intent") == "OPERATION" and smart_res.get("spoken_confirmation"):
+        reply_text = smart_res["spoken_confirmation"]
+    elif smart_res.get("spoken_confirmation") and smart_res.get("matched_item"):
+        reply_text = smart_res["spoken_confirmation"]
+    else:
+        # Filter recent conversation turns to exclude any past hallucinated numbers conflicting with verified data
+        clean_recent_turns = []
+        for turn in recent_turns:
+            if verified_numbers and turn.get("role") == "assistant":
+                turn_numbers = set(_re.findall(r'\b\d{2,}\b', turn.get("content", "")))
+                if turn_numbers and not turn_numbers.issubset(verified_numbers):
+                    continue
+            clean_recent_turns.append(turn)
+
+        try:
+            reply_text = await epsilon_bridge.generate_reply(
+                user_prompt=user_text,
+                context=context_summary,
+                system_prompt=system_prompt,
+                conversation_history=clean_recent_turns,
+                max_tokens=256
+            )
+        except Exception as e:
+            logger.error(f"Epsilon generation error: {e}")
+            reply_text = "I experienced a temporary glitch accessing my neural core. How else can I assist you?"
 
     # 3. Commit turns to multi-turn conversation buffer
     try:
         context_engine.store.save_turn(user_id=user_id, role="user", content=user_text)
         context_engine.store.save_turn(user_id=user_id, role="assistant", content=reply_text)
 
-        # Only store substantive conversation in semantic memory if not a refusal/glitch
+        # Only store PERSONAL / BIOGRAPHICAL content in semantic memory.
+        # NEVER store transactional, database lookup, or Q&A turn pairs.
+        smart_intent = smart_res.get("intent", "CONVERSATION")
+        is_transactional = smart_intent in ("OPERATION", "SEARCH", "PRICE", "QUANTITY", "STATUS", "LOCATION")
         is_refusal = any(p in reply_text.lower() for p in [
             "i don't have access", "as an ai assistant", "temporary glitch", "no matching records found"
         ])
-        if not is_refusal and context_engine.pipeline.should_store_semantic(user_text):
+        # Additional check: if reply contains specific numbers, it's likely a DB lookup turn
+        import re as _re2
+        has_numeric_answer = bool(_re2.search(r'\b\d{4,}\b', reply_text))  # 4+ digit numbers = DB data
+        should_store = (
+            not is_refusal
+            and not is_transactional
+            and not has_numeric_answer
+            and context_engine.pipeline.should_store_semantic(user_text)
+        )
+        if should_store:
             context_engine.store.upsert_semantic(
                 user_id=user_id,
                 text=f"User: {user_text}\nAssistant: {reply_text}",

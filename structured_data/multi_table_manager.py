@@ -320,12 +320,117 @@ class MultiTableWarehouseManager:
         if cached:
             return cached
 
-        target_tables = [table_name] if table_name else [t["table_name"] for t in self.list_tables()]
+        import re
+
+        MONTH_MAP = {
+            'january': '01', 'jan': '01', 'february': '02', 'feb': '02', 'march': '03', 'mar': '03',
+            'april': '04', 'apr': '04', 'may': '05', 'june': '06', 'jun': '06', 'july': '07', 'jul': '07',
+            'august': '08', 'aug': '08', 'september': '09', 'sep': '09', 'october': '10', 'oct': '10',
+            'november': '11', 'nov': '11', 'december': '12', 'dec': '12'
+        }
+
+        # Date pattern detection (e.g., '20th April', 'April 20', '2022-04-20')
+        lower_q = query.lower()
+        date_pattern = None
+        m_d1 = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)', lower_q)
+        if m_d1 and m_d1.group(2).lower() in MONTH_MAP:
+            date_pattern = f"-{MONTH_MAP[m_d1.group(2).lower()]}-{int(m_d1.group(1)):02d}"
+        else:
+            m_d2 = re.search(r'([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?', lower_q)
+            if m_d2 and m_d2.group(1).lower() in MONTH_MAP:
+                date_pattern = f"-{MONTH_MAP[m_d2.group(1).lower()]}-{int(m_d2.group(2)):02d}"
+            else:
+                m_d3 = re.search(r'(\d{4}-\d{2}-\d{2})', lower_q)
+                if m_d3:
+                    date_pattern = m_d3.group(1)
+
+        # Smart prioritization of target tables based on query keywords
+        all_tables = [t["table_name"] for t in self.list_tables()]
+        if table_name:
+            target_tables = [table_name]
+        else:
+            priority_tables = []
+            if any(k in lower_q for k in ["order", "dispatch", "ship", "delivery", "track"]):
+                priority_tables.extend([t for t in ["orders", "shipments", "order_items"] if t in all_tables])
+            if any(k in lower_q for k in ["salary", "employee", "worker", "staff"]):
+                priority_tables.extend([t for t in ["employees"] if t in all_tables])
+            if any(k in lower_q for k in ["product", "item", "stock", "price", "inventory"]):
+                priority_tables.extend([t for t in ["products", "inventory_items"] if t in all_tables])
+            if any(k in lower_q for k in ["customer", "client", "user"]):
+                priority_tables.extend([t for t in ["customers"] if t in all_tables])
+            if any(k in lower_q for k in ["store", "branch", "location"]):
+                priority_tables.extend([t for t in ["stores"] if t in all_tables])
+
+            ordered = []
+            for pt in priority_tables:
+                if pt not in ordered:
+                    ordered.append(pt)
+            for at in all_tables:
+                if at not in ordered:
+                    ordered.append(at)
+            target_tables = ordered
+
         results = []
 
         with self._get_connection() as conn:
             cur = conn.cursor()
-            import re
+
+            # Fast-path for date queries on orders/shipments/tables with date columns
+            if date_pattern:
+                for tname in target_tables:
+                    try:
+                        cur.execute(f"PRAGMA table_info(\"{tname}\");")
+                        cols = [r["name"] for r in cur.fetchall()]
+                        date_cols = [c for c in cols if any(dk in c.lower() for dk in ["date", "time", "created", "at"])]
+
+                        if tname == "orders" and "order_date" in cols:
+                            # Join with shipments if shipments table exists
+                            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shipments';")
+                            has_shipments = cur.fetchone() is not None
+                            if has_shipments:
+                                if any(k in lower_q for k in ["dispatch", "ship"]):
+                                    cur.execute("""
+                                        SELECT o.order_id, o.customer_id, o.order_date, s.status, o.store_id
+                                        FROM orders o
+                                        LEFT JOIN shipments s ON o.order_id = s.order_id
+                                        WHERE o.order_date LIKE ? AND s.status IN ('shipped', 'delivered')
+                                        ORDER BY o.order_id
+                                        LIMIT ?;
+                                    """, (f"%{date_pattern}%", limit))
+                                else:
+                                    cur.execute("""
+                                        SELECT o.order_id, o.customer_id, o.order_date, s.status, o.store_id
+                                        FROM orders o
+                                        LEFT JOIN shipments s ON o.order_id = s.order_id
+                                        WHERE o.order_date LIKE ?
+                                        ORDER BY o.order_id
+                                        LIMIT ?;
+                                    """, (f"%{date_pattern}%", limit))
+                                hits = [dict(r) for r in cur.fetchall()]
+                                for h in hits:
+                                    h["_source_table"] = "orders"
+                                if hits:
+                                    results.extend(hits[:limit])
+                                    break
+
+                        # General date column LIKE query
+                        for dc in date_cols:
+                            cur.execute(f"SELECT * FROM \"{tname}\" WHERE \"{dc}\" LIKE ? LIMIT ?;", (f"%{date_pattern}%", limit))
+                            hits = [dict(r) for r in cur.fetchall()]
+                            if hits:
+                                for h in hits:
+                                    h["_source_table"] = tname
+                                results.extend(hits)
+                                break
+                        if results:
+                            break
+                    except Exception as date_err:
+                        logger.debug(f"Date search note on {tname}: {date_err}")
+
+                if results:
+                    hot_cache.set(cache_key, results[:limit], ttl_seconds=300)
+                    return results[:limit]
+
             cleaned = re.sub(r'[^a-zA-Z0-9]+', ' ', query).strip()
             terms = [t for t in cleaned.split() if len(t) >= 1]
             if not terms:
@@ -453,6 +558,28 @@ class MultiTableWarehouseManager:
                 return res
             return None
 
+    def search_records_by_field(
+        self,
+        table_name: str,
+        field_name: str,
+        field_value: Any,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns all rows from `table_name` where `field_name` = `field_value`.
+        Used for relational lookups such as fetching all order_items for a given order_id.
+        Results are NOT cached (dynamic relational data must always be fresh).
+        """
+        try:
+            with self._get_connection() as conn:
+                cur = conn.cursor()
+                query = f'SELECT * FROM "{table_name}" WHERE "{field_name}" = ? LIMIT {int(limit)};'
+                cur.execute(query, (field_value,))
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"search_records_by_field error on {table_name}.{field_name}={field_value}: {e}")
+            return []
+
     def execute_aggregation(
         self,
         table_name: str,
@@ -472,14 +599,14 @@ class MultiTableWarehouseManager:
         if agg_clean not in ["COUNT", "SUM", "AVG", "MIN", "MAX"]:
             agg_clean = "COUNT"
 
-        cache_key = f"agg:{table_name}:{agg_clean}:{column}:{group_by}:{filter_condition}"
+        params = list(filter_params or [])
+        cache_key = f"agg:{table_name}:{agg_clean}:{column}:{group_by}:{filter_condition}:{params}"
         cached = hot_cache.get(cache_key)
         if cached:
             return cached
 
         with self._get_connection() as conn:
             cur = conn.cursor()
-            params = list(filter_params or [])
             where_clause = f" WHERE {filter_condition}" if filter_condition else ""
 
             if group_by:
@@ -499,6 +626,7 @@ class MultiTableWarehouseManager:
                     "value": total_val,
                     "formatted_value": f"{total_val:,.2f}" if isinstance(total_val, float) else f"{total_val:,}",
                     "breakdown": breakdown,
+                    "filter_condition": filter_condition,
                     "sql": sql,
                     "elapsed_ms": round(elapsed_ms, 2)
                 }
@@ -510,6 +638,13 @@ class MultiTableWarehouseManager:
                 val = row["val"] if row else 0
                 cnt = row["total_rows"] if row else 0
                 elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+
+                # Also fetch sample records for transparency if count is reasonable
+                sample_records = []
+                if cnt > 0 and cnt <= 50:
+                    sample_cur = conn.cursor()
+                    sample_cur.execute(f"SELECT * FROM \"{table_name}\"{where_clause} LIMIT 25;", params)
+                    sample_records = [dict(r) for r in sample_cur.fetchall()]
                 
                 # Format nicely
                 if val is None:
@@ -530,6 +665,8 @@ class MultiTableWarehouseManager:
                     "value": val,
                     "formatted_value": formatted,
                     "total_rows_evaluated": cnt,
+                    "filter_condition": filter_condition,
+                    "sample_records": sample_records,
                     "sql": sql,
                     "elapsed_ms": round(elapsed_ms, 2)
                 }

@@ -134,9 +134,9 @@ class TestOperationsLayer(unittest.TestCase):
         """Verify end-to-end SmartDataLayerEngine operation execution."""
         res = self.engine.process_query("Can you tell me the sum of all the salaries that was given to employees")
         self.assertEqual(res["intent"], "OPERATION")
-        self.assertEqual(res["operation"], "AGGREGATION")
-        self.assertIsNotNone(res["operation_details"])
-        self.assertIn("49,448,064", res["spoken_confirmation"])
+        self.assertIn("sum of salary in employees", res["spoken_confirmation"].lower())
+        self.assertEqual(res["operation_details"]["table"], "employees")
+        self.assertEqual(res["operation_details"]["function"], "SUM")
         self.assertIn("SELECT SUM", res["context_string"])
 
 

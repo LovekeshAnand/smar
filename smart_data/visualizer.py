@@ -82,28 +82,38 @@ class AdaptiveDataVisualizer:
         if op_type == "AGGREGATION" and operation_result.get("breakdown"):
             breakdown = operation_result["breakdown"]
             table = operation_result.get("table", "Data").title()
-            col = operation_result.get("column", "Value").replace("_", " ").title()
+            raw_col = str(operation_result.get("column", "*"))
             grp = operation_result.get("group_by", "Group").replace("_", " ").title()
             fn = operation_result.get("function", "SUM")
 
-            title = title_hint or f"{fn} of {col} by {grp} ({table})"
+            if fn == "COUNT" and (raw_col == "*" or raw_col.lower().endswith("id") or raw_col == table.lower()):
+                title = title_hint or f"{table} Count by {grp}"
+                y_label = f"{table} Count"
+            else:
+                col = raw_col.replace("_", " ").title()
+                title = title_hint or f"{fn} of {col} by {grp} ({table})"
+                y_label = f"{fn} of {col}"
 
             # If 6 or fewer categories, check if donut chart is suitable
             if len(breakdown) <= 6 and fn in ["SUM", "COUNT"]:
                 return self.generate_donut_chart(breakdown, title=title)
             else:
-                return self.generate_bar_chart(breakdown, title=title, x_label=grp, y_label=f"{fn} of {col}")
+                return self.generate_bar_chart(breakdown, title=title, x_label=grp, y_label=y_label)
 
         # 2. Single Aggregate Metric -> High-Impact KPI Card
         if op_type == "AGGREGATION":
             val = operation_result.get("value", 0)
             formatted = operation_result.get("formatted_value", str(val))
             fn = operation_result.get("function", "METRIC")
-            col = operation_result.get("column", "Total").replace("_", " ").title()
+            raw_col = str(operation_result.get("column", "*"))
             table = operation_result.get("table", "Records").title()
             rows_eval = operation_result.get("total_rows_evaluated", 0)
 
-            title = title_hint or f"{fn} of {col}"
+            if fn == "COUNT" and (raw_col == "*" or raw_col.lower().endswith("id") or raw_col == table.lower()):
+                title = title_hint or f"Total {table} Count"
+            else:
+                col = raw_col.replace("_", " ").title()
+                title = title_hint or f"{fn} of {col}"
             subtitle = f"Evaluated across {rows_eval:,} rows in {table}" if rows_eval else f"Dataset: {table}"
             return self.generate_kpi_card(formatted, title=title, subtitle=subtitle)
 

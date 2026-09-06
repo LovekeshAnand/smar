@@ -39,7 +39,7 @@ EXTRACTION_PATTERNS = [
     (re.compile(r"(?:मेरा नाम|main hoon)\s+([A-Za-z\u0900-\u097F\s]{1,30})", re.IGNORECASE), "Name"),
     
     # Location / Residence / Origin
-    (re.compile(r"(?:i live in|i moved to|i am currently living in|my city is|i stay in|i am based in|i am from|i'm from)\s+([A-Za-z\u0900-\u097F\s]{2,30})", re.IGNORECASE), "LivesIn"),
+    (re.compile(r"(?:(?<!don't\s)(?<!do not\s)i live in|i moved to|i am currently living in|my city is|i stay in|i am based in|i am from|i'm from)\s+([A-Za-z\u0900-\u097F\s]{2,30})", re.IGNORECASE), "LivesIn"),
     (re.compile(r"(?:main|mein)\s+([A-Za-z\u0900-\u097F\s]{2,30})\s+(?:me rehta|se hu|rehti)", re.IGNORECASE), "LivesIn"),
     
     # Work / Company / Role / Profession
@@ -82,7 +82,7 @@ class KnowledgeFormationPipeline:
 
     def _split_into_clauses(self, text: str) -> List[str]:
         """Splits compound sentences by conjunctions to prevent compound fact bleeding."""
-        split_regex = r"(?:\s+(?:and|also|as well as|plus|aur|तथा|और|can you|could you|please)\s+|[;\n]+|(?<=[a-zA-Z0-9])\.\s+(?=[A-Z\u0900-\u097F])|,\s*(?=[a-z\u0900-\u097F]))"
+        split_regex = r"(?:\s+(?:and|also|as well as|plus|aur|तथा|और|can you|could you|please|so you can|so please|so)\s+|[;\n]+|(?<=[a-zA-Z0-9])\.\s+(?=[A-Z\u0900-\u097F])|,\s*(?=[a-z\u0900-\u097F]))"
         raw_clauses = re.split(split_regex, text, flags=re.IGNORECASE)
         clauses = []
         for c in raw_clauses:
@@ -303,22 +303,54 @@ class KnowledgeFormationPipeline:
 
     def should_store_semantic(self, text: str) -> bool:
         """
-        Determines whether a message contains substantive information worthy
-        of entering the semantic vector memory (avoids short chitchat, greetings, and ephemeral queries).
+        Determines whether a message contains substantive PERSONAL information worthy
+        of entering the semantic vector memory.
+
+        STRICT POLICY:
+        - Only store genuine personal user statements (name, location, job, preferences).
+        - NEVER store transactional queries, database lookups, or question-answer pairs.
+        - Any text mentioning database entity keywords (order, salary, price, employee, etc.)
+          is assumed transactional and blocked regardless of phrasing.
         """
         clean = text.strip()
         if len(clean) < 6:
             return False
 
         low = clean.lower()
-        greetings = {"hello", "hi", "hey", "bye", "goodbye", "ok", "okay", "thanks", "thank you"}
+
+        # Block pure greetings / chitchat
+        greetings = {"hello", "hi", "hey", "bye", "goodbye", "ok", "okay", "thanks", "thank you",
+                     "naa", "hmm", "uh", "um", "yes", "no", "sure", "alright", "fine"}
         if low in greetings:
             return False
 
-        # Exclude questions asking for data / lookups / meta-questions from semantic memory
-        # to avoid polluting vector store with ephemeral query logs
-        if re.match(r"^(?:what|who|where|when|why|how|which|whose|whom|is|are|can|could|tell me|show me|give me|find|search)\b", low):
+        # Block ANY query starting with question words — these are always lookups
+        if re.match(
+            r"^(?:what|who|where|when|why|how|which|whose|whom|is|are|can|could|"
+            r"tell\s+me|show\s+me|give\s+me|find|search|check|list|display|get|fetch|"
+            r"hi\s+what|hi\s+can|hi\s+how|hi\s+could|hi\s+please|hi\s+i)\b",
+            low
+        ):
+            return False
+
+        # Block texts mentioning transactional/warehouse entity keywords
+        transactional_keywords = {
+            "order", "employee", "salary", "price", "stock", "product", "shipment",
+            "payment", "promotion", "customer", "supplier", "return", "category",
+            "qty", "quantity", "amount", "sum", "count", "avg", "average", "total",
+            "item", "invoice", "bill", "receipt", "transaction", "store", "revenue",
+            "profit", "loss", "discount", "refund", "tax", "fee"
+        }
+        words_in_text = set(re.findall(r'\b[a-z]+\b', low))
+        if words_in_text & transactional_keywords:
+            return False
+
+        # Block texts that are "User: ...\nAssistant: ..." QA pairs
+        if "user:" in low and "assistant:" in low:
+            return False
+
+        # Block unrecognized speech placeholders
+        if "unrecognized speech" in low:
             return False
 
         return True
-
