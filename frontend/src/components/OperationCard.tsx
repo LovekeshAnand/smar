@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 
 export interface OperationDetails {
-  operation: "AGGREGATION" | "INSERT" | "UPDATE" | "DELETE" | "TABULAR";
+  operation: "AGGREGATION" | "INSERT" | "UPDATE" | "DELETE" | "TABULAR" | "COMPOUND" | string;
   table: string;
   function?: string;
   column?: string;
@@ -37,6 +37,8 @@ export const OperationCard: React.FC<OperationCardProps> = ({ details }) => {
     switch (details.operation) {
       case "AGGREGATION":
         return "bg-cyan-500/15 text-cyan-300 border-cyan-500/40 shadow-cyan-500/10";
+      case "COMPOUND":
+        return "bg-indigo-500/15 text-indigo-300 border-indigo-500/40 shadow-indigo-500/10";
       case "INSERT":
         return "bg-emerald-500/15 text-emerald-300 border-emerald-500/40 shadow-emerald-500/10";
       case "UPDATE":

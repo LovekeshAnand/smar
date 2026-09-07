@@ -223,7 +223,54 @@ class SmartDataLayerEngine:
                 chart = None
 
                 try:
-                    if op_type == "AGGREGATION":
+                    if op_type == "COMPOUND":
+                        sub_results = []
+                        spoken_parts = []
+                        context_parts = []
+                        chart = None
+
+                        for sub_plan in plan["plans"]:
+                            sub_op = sub_plan.get("operation")
+                            if sub_op == "AGGREGATION":
+                                s_res = self.warehouse_manager.execute_aggregation(
+                                    table_name=sub_plan["table"],
+                                    agg_func=sub_plan["function"],
+                                    column=sub_plan["column"],
+                                    group_by=sub_plan.get("group_by"),
+                                    filter_condition=sub_plan.get("filter_condition"),
+                                    filter_params=sub_plan.get("filter_params")
+                                )
+                                sub_results.append(s_res)
+                                if (sub_plan.get("wants_visual") or sub_plan.get("group_by")) and not chart:
+                                    chart = self.visualizer.generate_chart_for_operation(s_res)
+
+                                if sub_plan['function'] == 'COUNT' and (sub_plan['column'] in ('*', 'total') or sub_plan['column'].endswith('_id') or sub_plan['column'] == 'id'):
+                                    col_disp = sub_plan['table']
+                                else:
+                                    col_disp = sub_plan['column'].replace('_', ' ')
+                                filter_desc = sub_plan.get("filter_description")
+                                if sub_plan.get("group_by"):
+                                    grp_disp = sub_plan['group_by'].replace('_', ' ')
+                                    spoken_parts.append(f"Here is the {sub_plan['function'].lower()} of {col_disp} grouped by {grp_disp} across {sub_plan['table']}.")
+                                    context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']} of {col_disp} grouped by {grp_disp} on table '{sub_plan['table']}'. Breakdown: {s_res.get('breakdown')} (SQL: {s_res.get('sql')})")
+                                elif filter_desc:
+                                    val_disp = s_res.get("formatted_value", s_res.get("value"))
+                                    cnt_rows = s_res.get("total_rows_evaluated", 0)
+                                    spoken_parts.append(f"The {sub_plan['function'].lower()} of {col_disp} in {sub_plan['table']} for {filter_desc} is {val_disp} (evaluated across {cnt_rows} records).")
+                                    context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']}({col_disp}) on table '{sub_plan['table']}' where {filter_desc} = {val_disp} across {cnt_rows} records (SQL: {s_res.get('sql')})")
+                                else:
+                                    val_disp = s_res.get("formatted_value", s_res.get("value"))
+                                    cnt_rows = s_res.get("total_rows_evaluated", 0)
+                                    spoken_parts.append(f"The {sub_plan['function'].lower()} of {col_disp} in {sub_plan['table']} is {val_disp} across {cnt_rows} records.")
+                                    context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']}({col_disp}) on table '{sub_plan['table']}' = {val_disp} across {cnt_rows} rows (SQL: {s_res.get('sql')})")
+
+                        spoken_response = " ".join(spoken_parts)
+                        context_str = " | ".join(context_parts)
+                        visual_res = next((r for r, p in zip(sub_results, plan["plans"]) if p.get("wants_visual") or p.get("group_by")), sub_results[0] if sub_results else {})
+                        op_res = dict(visual_res)
+                        op_res["sub_results"] = sub_results
+
+                    elif op_type == "AGGREGATION":
                         op_res = self.warehouse_manager.execute_aggregation(
                             table_name=plan["table"],
                             agg_func=plan["function"],
@@ -309,7 +356,7 @@ class SmartDataLayerEngine:
                         s_cols = list(s_recs[0].keys()) if s_recs else []
                         table_data_payload = {
                             "operation": "TABULAR",
-                            "table": plan["table"],
+                            "table": plan.get("table") or op_res.get("table", "data"),
                             "columns": s_cols,
                             "rows": [[r.get(c) for c in s_cols] for r in s_recs],
                             "records": s_recs,

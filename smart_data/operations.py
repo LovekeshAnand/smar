@@ -170,11 +170,49 @@ class OperationsAnalyzer:
             return best_table
         return schema_tables[0]["table_name"]
 
+    def split_compound_queries(self, text: str) -> List[str]:
+        """Splits multi-intent utterances into individual query clauses."""
+        raw_segments = [s.strip() for s in re.split(r"[\?\.\;\!]+", text) if s.strip()]
+        starters = (
+            r"(?:can you\s+(?:show|tell|give|display|get|find|list|calculate|compute)|"
+            r"could you\s+(?:show|tell|give|display|get|find|list|calculate|compute)|"
+            r"please\s+(?:show|tell|give|display|get|find|list|calculate|compute)|"
+            r"and\s+(?:also\s+)?(?:can you|could you|please\s+)?(?:show|tell|give|display|get|find|list|calculate|compute)|"
+            r"also\s+(?:can you|could you|please\s+)?(?:show|tell|give|display|get|find|list|calculate|compute)|"
+            r"show me|tell me|give me|calculate|compute)"
+        )
+        segments = []
+        for seg in raw_segments:
+            sub_parts = re.split(rf"(?<=\w)\s+(?={starters}\b)", seg, flags=re.IGNORECASE)
+            segments.extend([p.strip() for p in sub_parts if p.strip()])
+        return segments
+
     def parse_plan(self, text: str, schema_tables: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
         Translates user utterance into an executable Operation Plan.
         Adapts dynamically to the provided database schema tables.
+        Handles both single-intent operations and compound multi-intent queries.
         """
+        segments = self.split_compound_queries(text)
+        if len(segments) > 1:
+            sub_plans = []
+            for seg in segments:
+                if self.is_operation_query(seg):
+                    p = self._parse_single_plan(seg, schema_tables)
+                    if p:
+                        sub_plans.append(p)
+            if len(sub_plans) > 1:
+                return {
+                    "operation": "COMPOUND",
+                    "plans": sub_plans,
+                    "wants_visual": any(p.get("wants_visual") for p in sub_plans)
+                }
+            elif len(sub_plans) == 1:
+                return sub_plans[0]
+
+        return self._parse_single_plan(text, schema_tables)
+
+    def _parse_single_plan(self, text: str, schema_tables: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         lower = text.lower()
         clean = re.sub(r"[^\w\s\-\.\,\:]", " ", lower).strip()
 
@@ -283,21 +321,28 @@ class OperationsAnalyzer:
         else:
             # For mathematical operations (SUM, AVG/MEAN, MIN, MAX):
             # Step 1: Check if a column is explicitly named immediately after the aggregation word
-            # e.g., "mean of salaries", "average of the salary", "sum of amounts", "max of price"
+            # e.g., "mean of salaries", "average of the salary", "sum of amounts", "max of price", "mean of the employee id"
             agg_target_m = re.search(
-                r"(?:sum|total|avg|average|mean|min|minimum|max|maximum)\s+(?:of|in)?\s+(?:the\s+)?([a-z_]+)",
+                r"(?:sum|total|avg|average|mean|min|minimum|max|maximum)\s+(?:of|in|for)?\s+(?:the\s+)?([a-z_]+(?:\s+[a-z_]+)?)",
                 clean_lower
             )
             if agg_target_m:
-                raw_word = agg_target_m.group(1).rstrip("s")
-                if raw_word.endswith("ie"):
-                    raw_word = raw_word[:-2] + "y"  # "salaries" -> "salary"
-                for c in metric_cols:
-                    cname = c.lower().rstrip("s")
-                    if cname.endswith("ie"):
-                        cname = cname[:-2] + "y"
-                    if raw_word == cname or raw_word in c.lower() or c.lower() in agg_target_m.group(1):
-                        target_col = c
+                matched_phrase = agg_target_m.group(1).strip()
+                # Check both metric and ID columns
+                for col_candidate in metric_cols + id_cols:
+                    cname = col_candidate.lower()
+                    c_phrase = cname.replace("_", " ")
+                    if matched_phrase == c_phrase or matched_phrase == cname:
+                        target_col = col_candidate
+                        break
+                    raw_word = matched_phrase.rstrip("s")
+                    if raw_word.endswith("ie"):
+                        raw_word = raw_word[:-2] + "y"
+                    c_clean = c_phrase.rstrip("s")
+                    if c_clean.endswith("ie"):
+                        c_clean = c_clean[:-2] + "y"
+                    if raw_word == c_clean or raw_word in cname:
+                        target_col = col_candidate
                         break
 
             # Step 2: Check if any metric column (or its plural) appears anywhere in the clean query
@@ -317,12 +362,12 @@ class OperationsAnalyzer:
                         target_col = c
                         break
 
-            # Step 4: Explicit request for ID aggregation (only if user explicitly says e.g. "average of employee id")
+            # Step 4: Explicit request for ID aggregation (e.g. "average of employee id", "mean of the employee id")
             if not target_col:
                 for c in id_cols:
                     cname = c.lower()
                     c_phrase = cname.replace("_", " ")
-                    if f"of {cname}" in clean_lower or f"of {c_phrase}" in clean_lower:
+                    if re.search(rf"\b(?:of|for|in)\s+(?:the\s+)?(?:{re.escape(cname)}|{re.escape(c_phrase)})\b", clean_lower):
                         target_col = c
                         break
 
