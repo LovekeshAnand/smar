@@ -38,26 +38,26 @@
 
 </div>
 
-## 1. 🌟 Executive Summary & Vision
+## 1. Executive Summary & Vision
 
 Traditional voice AI assistants suffer from two fatal limitations:
 1. **Amnesia (Loss of Context)**: Conversations are completely ephemeral. When a session terminates, all context is lost. They cannot recall your identity, preferences, ongoing tasks, or earlier dialogue turns without massive, expensive context-stuffing.
 2. **Disconnected Data & Passivity**: They cannot query enterprise databases or execute mutations (`INSERT`, `UPDATE`, `DELETE`) and aggregations in real time without brittle, hardcoded SQL rules or sluggish multi-second latency that breaks conversational speech flow.
 
 **SMAR** (Smart Memory & Autonomous Reasoning) is architected from first principles to bridge voice, memory, and warehouse execution:
-- 🎙️ **Zero-Latency Multilingual Voice Loop**: Real-time integration with Gnani.ai / Vachana.ai (Prisma STT & Timbre TTS) in English and Indian languages (Hindi, Hinglish).
-- 🧠 **Persistent Cognitive Context Layer**: Multi-tenant SQLite Knowledge Graph (`kg_triples`) and subword-vector semantic memory (`semantic_memories`) utilizing **upsert-by-similarity** to continuously remember user attributes, preferences, and relationships across sessions.
-- ⚡ **Dynamic 1.59M+ Row Warehouse Engine**: Introspects, indexes, and queries across **12 tables with 1,591,380 rows (65.84 Lakh data points)** in sub-100ms with SQLite FTS5 full-text indexing and numeric fallbacks.
-- 🛡️ **Zero-Hardcoding Operations Layer**: Executes mutations (`INSERT`, `UPDATE`, `DELETE`) and mathematical aggregations (`SUM`, `AVG`/`MEAN`, `COUNT`, `MIN`, `MAX`, `GROUP BY`, `BETWEEN Range`) with strict metric-vs-identifier column prioritization, before/after diffing, and live FTS5 synchronization.
-- 🔍 **Deep Relational Line-Item Disambiguation**: Disambiguates line item IDs from parent order IDs, computes line-item arithmetic ($unit\_price \times qty$), and joins payments and shipments without LLM hallucination.
-- 📊 **Adaptive Visual Data Synthesis**: Headless chart synthesizer rendering dark-themed responsive bar charts, donut charts, and high-impact KPI metric badges directly to Base64 PNGs without disk I/O.
-- 🪟 **Transparent Glassmorphic Interface**: Dedicated Next.js cards displaying executed SQL, latency in milliseconds, affected records, before/after diffs, and interactive data tables.
-- 🚀 **Tiered Hot Cache & Anti-Poisoning Architecture**: Two-tier caching (L1 In-Memory LRU + L2 Redis Docker Container) with strict memory guardrails preventing transactional query cross-contamination into personal semantic memory.
-- 💬 **Conversational Recall & Anti-Refusal Directives**: Instant recall of the first question asked in a session, dynamic identity disambiguation, and complete elimination of canned AI refusal boilerplate.
+- **Zero-Latency Multilingual Voice Loop**: Real-time integration with Gnani.ai / Vachana.ai (Prisma STT & Timbre TTS) in English and Indian languages (Hindi, Hinglish).
+- **Persistent Cognitive Context Layer**: Multi-tenant SQLite Knowledge Graph (`kg_triples`) and subword-vector semantic memory (`semantic_memories`) utilizing **upsert-by-similarity** to continuously remember user attributes, preferences, and relationships across sessions.
+- **Dynamic 1.59M+ Row Warehouse Engine**: Introspects, indexes, and queries across **12 tables with 1,591,380 rows (65.84 Lakh data points)** in sub-100ms with SQLite FTS5 full-text indexing and numeric fallbacks.
+- **Zero-Hardcoding Operations Layer**: Executes mutations (`INSERT`, `UPDATE`, `DELETE`) and mathematical aggregations (`SUM`, `AVG`/`MEAN`, `COUNT`, `MIN`, `MAX`, `GROUP BY`, `BETWEEN Range`) with strict metric-vs-identifier column prioritization, before/after diffing, and live FTS5 synchronization.
+- **Deep Relational Line-Item Disambiguation**: Disambiguates line item IDs from parent order IDs, computes line-item arithmetic ($unit\_price \times qty$), and joins payments and shipments without LLM hallucination.
+- **Adaptive Visual Data Synthesis**: Headless chart synthesizer rendering dark-themed responsive bar charts, donut charts, and high-impact KPI metric badges directly to Base64 PNGs without disk I/O.
+- **Transparent Glassmorphic Interface**: Dedicated Next.js cards displaying executed SQL, latency in milliseconds, affected records, before/after diffs, and interactive data tables.
+- **Tiered Hot Cache & Anti-Poisoning Architecture**: Two-tier caching (L1 In-Memory LRU + L2 Redis Docker Container) with strict memory guardrails preventing transactional query cross-contamination into personal semantic memory.
+- **Conversational Recall & Anti-Refusal Directives**: Instant recall of the first question asked in a session, dynamic identity disambiguation, and complete elimination of canned AI refusal boilerplate.
 
 ---
 
-## 2. 🏛️ System Architecture
+## 2. System Architecture
 
 ```mermaid
 flowchart TB
@@ -162,7 +162,7 @@ flowchart TB
 
 ---
 
-## 3. ⚙️ Core Platform Capabilities
+## 3. Core Platform Capabilities
 
 ### 3.1 Multi-Table Warehouse Engine (1.59M+ Rows / 65.84 Lakh Data Points)
 The synchronized enterprise database consists of 12 tables containing **1,591,380 rows** across **6,583,760 cells**:
@@ -247,7 +247,7 @@ The synchronized enterprise database consists of 12 tables containing **1,591,38
 
 ---
 
-## 4. 📁 Repository Structure
+## 4. Repository Structure
 
 ```
 smar/
@@ -318,7 +318,7 @@ smar/
 
 ---
 
-## 5. 🚀 Quick Start Guide
+## 5. Quick Start Guide
 
 ### 5.1 Prerequisites
 - **Python**: 3.11+
@@ -399,7 +399,7 @@ smar/
 
 ---
 
-## 6. 🧪 Battle-Tested Validation Suite
+## 6. Battle-Tested Validation Suite
 
 SMAR is verified through a rigorous 3-tier testing pyramid:
 
@@ -443,7 +443,7 @@ EXTREME TEST SUMMARY: 20/20 PASSED (100.0%) | 0 FAILED
 
 ---
 
-## 7. 💬 Sample Interactions & Live Performance
+## 7. Sample Interactions & Live Performance
 
 | User Query / Utterance | Platform Execution & Route | Spoken Voice Confirmation & Visual Artifact |
 | :--- | :--- | :--- |
@@ -462,7 +462,7 @@ EXTREME TEST SUMMARY: 20/20 PASSED (100.0%) | 0 FAILED
 
 ---
 
-## 8. 📜 License & Acknowledgments
+## 8. License & Acknowledgments
 
 This project is licensed under the Apache 2.0 License. Powered by:
 - [Gnani.ai / Vachana.ai](https://gnani.ai) for multilingual voice synthesis & ASR.
