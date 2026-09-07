@@ -46,10 +46,17 @@ class SmartIntentEntityExtractor:
         normalized = re.sub(r'\b(\d+):(\d+)\b', r'\1\2', text)
 
         # Step 2: after a known ID-context keyword, merge space-separated digit
-        # tokens if their concatenation is 5-10 digits long
+        # tokens if their concatenation is 5-10 digits long.
+        # Dynamically include any table names or entity tokens learned from active database schemas.
+        base_keywords = {"order", "item", "order item", "product", "employee", "shipment", "payment", "customer", "return", "number", "#", "id", "no", "entry", "record", "row"}
+        if self.domain_dict and hasattr(self.domain_dict, "table_names"):
+            for t in self.domain_dict.table_names:
+                t_lower = t.lower()
+                base_keywords.add(t_lower)
+                base_keywords.add(t_lower.rstrip("s"))
+        kw_pattern = "|".join(re.escape(k) for k in base_keywords if k)
         id_context_pattern = re.compile(
-            r'(?<!\w)(order|item|order item|product|employee|shipment|payment|customer|return|number|#|id|no\.?)\s+'
-            r'(\d+(?:\s+\d+)*)',
+            rf'(?<!\w)({kw_pattern})\s+(\d+(?:\s+\d+)*)',
             re.IGNORECASE
         )
 

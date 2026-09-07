@@ -145,8 +145,14 @@ class OperationsAnalyzer:
                 ctype = str(c.get("type", "")).upper()
                 is_numeric = any(nt in ctype for nt in ["INT", "REAL", "FLOAT", "DOUBLE", "NUM"])
 
-                # Exact column or phrase match
-                if cname in words or c_phrase in clean or (cname.endswith("s") and cname[:-1] in words) or (cname == "salary" and "salaries" in words):
+                # Exact column or phrase match (including standard plural/inflection forms)
+                if (
+                    cname in words
+                    or c_phrase in clean
+                    or (cname.endswith("s") and cname[:-1] in words)
+                    or (cname.endswith("y") and (cname[:-1] + "ies") in words)
+                    or (cname + "s" in words)
+                ):
                     score_boost = 5.0
                     if has_aggregation and is_numeric and not cname.endswith("_id"):
                         score_boost += 6.0  # Dominant priority for the table owning the numeric aggregation column!
@@ -250,17 +256,21 @@ class OperationsAnalyzer:
         if any(kw in lower for kw in self.MUTATION_KEYWORDS["DELETE"]):
             return self._parse_delete_plan(clean, text, target_table, schema_tables)
 
-        # -------------------------------------------------------------
-        # 5. Check for AGGREGATIONS (SUM, AVG, COUNT, MIN, MAX)
-        # -------------------------------------------------------------
-        detected_agg = None
-        for agg_name, keywords in self.AGG_KEYWORDS.items():
-            for kw in keywords:
-                if kw in lower:
-                    detected_agg = agg_name
-                    break
-            if detected_agg:
-                break
+        # Check if query has an implicit grouping expression ("per <dimension>", "by <dimension>")
+        if not detected_agg:
+            table_obj = next((t for t in schema_tables if t["table_name"] == target_table), None) if target_table else (schema_tables[0] if schema_tables else None)
+            cols = table_obj.get("columns", []) if table_obj else []
+            has_grouping = any(
+                f"per {c['name'].lower()}" in clean or
+                f"by {c['name'].lower()}" in clean or
+                f"per {c['name'].lower().replace('_', ' ')}" in clean or
+                f"by {c['name'].lower().replace('_', ' ')}" in clean or
+                (c['name'].lower().endswith('_id') and f"per {c['name'].lower()[:-3]}" in clean) or
+                (c['name'].lower().endswith('_id') and f"by {c['name'].lower()[:-3]}" in clean)
+                for c in cols
+            )
+            if has_grouping:
+                detected_agg = "COUNT"
 
         if detected_agg:
             return self._parse_aggregation_plan(clean, detected_agg, target_table, schema_tables, wants_visual)
@@ -384,18 +394,29 @@ class OperationsAnalyzer:
                 group_by_col = c["name"]
                 break
         
-        # Shorthand phrases (e.g. "per store" -> "store_id")
+        # Dynamic shorthand phrases matching any entity or dimension column
         if not group_by_col:
-            if "store" in clean and any(c["name"] == "store_id" for c in columns):
-                group_by_col = "store_id"
-            elif "category" in clean and any(c["name"] == "category_id" for c in columns):
-                group_by_col = "category_id"
-            elif "customer" in clean and any(c["name"] == "customer_id" for c in columns):
-                group_by_col = "customer_id"
-            elif "city" in clean and any(c["name"] == "city" for c in columns):
-                group_by_col = "city"
-            elif "status" in clean and any(c["name"] == "status" for c in columns):
-                group_by_col = "status"
+            for c in columns:
+                cname = c["name"].lower()
+                c_phrase = cname.replace("_", " ")
+                # Check for ID columns where user says "per <base>" -> "<base>_id"
+                if cname.endswith("_id"):
+                    base = cname[:-3]
+                    if (
+                        any(f"{p} {base}" in clean for p in ["per", "by", "each", "every", "across"])
+                        or f"{base} wise" in clean
+                        or (f"in {base}" in clean and "chart" in clean)
+                    ):
+                        group_by_col = c["name"]
+                        break
+                # Check for categorical or text dimension columns (e.g. "city", "status", "category", "region", "type")
+                if (
+                    any(f"{p} {cname}" in clean or f"{p} {c_phrase}" in clean for p in ["per", "by", "each", "every", "across"])
+                    or f"{cname} wise" in clean
+                    or f"{c_phrase} wise" in clean
+                ):
+                    group_by_col = c["name"]
+                    break
 
         # Check for range or filter conditions (e.g. "from 30 to 40", "range of employee id 30 to 40", "between 1 and 10")
         filter_cond = None
@@ -490,8 +511,18 @@ class OperationsAnalyzer:
         if not pk_col:
             pk_col = next((c["name"] for c in columns if c["name"].lower().endswith("id")), columns[0]["name"] if columns else "id")
 
-        # Search for ID in text (e.g. "employee 98", "order id 210", "id 42")
-        id_match = re.search(r"(?:id|number|#|employee|order|customer|item|product)\s*(?:is|=|:)?\s*(\d+)", clean)
+        # Search for ID in text using dynamically derived entity stems
+        table_stem = active_table.rstrip("s").lower()
+        pk_stem = pk_col.replace("_id", "").replace("id", "").lower()
+        entity_stems = {"id", "number", "num", "#", "entry", "record", "row", table_stem}
+        if pk_stem:
+            entity_stems.add(pk_stem)
+        for c in columns:
+            cname = c["name"].lower()
+            if cname.endswith("_id"):
+                entity_stems.add(cname[:-3])
+        entity_pattern = "|".join([re.escape(s) for s in entity_stems if s])
+        id_match = re.search(rf"(?:{entity_pattern})\s*(?:is|=|:)?\s*(\d+)", clean)
         if id_match:
             filter_data[pk_col] = int(id_match.group(1))
         else:
@@ -604,9 +635,23 @@ class OperationsAnalyzer:
             pk_col = next((c["name"] for c in columns if c["name"].lower().endswith("id")), columns[0]["name"] if columns else "id")
 
         filter_data: Dict[str, Any] = {}
-        digits = [int(w) for w in clean.split() if w.isdigit()]
-        if digits:
-            filter_data[pk_col] = digits[0]
+        table_stem = active_table.rstrip("s").lower()
+        pk_stem = pk_col.replace("_id", "").replace("id", "").lower()
+        entity_stems = {"id", "number", "num", "#", "entry", "record", "row", table_stem}
+        if pk_stem:
+            entity_stems.add(pk_stem)
+        for c in columns:
+            cname = c["name"].lower()
+            if cname.endswith("_id"):
+                entity_stems.add(cname[:-3])
+        entity_pattern = "|".join([re.escape(s) for s in entity_stems if s])
+        id_match = re.search(rf"(?:{entity_pattern})\s*(?:is|=|:)?\s*(\d+)", clean)
+        if id_match:
+            filter_data[pk_col] = int(id_match.group(1))
+        else:
+            digits = [int(w) for w in clean.split() if w.isdigit()]
+            if digits:
+                filter_data[pk_col] = digits[0]
 
         return {
             "operation": "DELETE",

@@ -201,12 +201,26 @@ class SmartDataLayerEngine:
         # properly aggregating order_items for that specific order.
         # NOTE: This guard only suppresses AGGREGATION — TABULAR, VISUAL, INSERT, UPDATE,
         # DELETE always go through the operations path regardless.
+        # Dynamically derive entity keywords from connected schema tables and columns
+        dynamic_entity_keywords = {"id", "item", "record", "entry", "row", "number", "#"}
+        for t in tables_list:
+            tname = t.get("table_name", "").lower()
+            dynamic_entity_keywords.add(tname)
+            if tname.endswith("ies") and len(tname) > 3:
+                dynamic_entity_keywords.add(tname[:-3] + "y")
+            elif tname.endswith("es") and len(tname) > 2:
+                dynamic_entity_keywords.add(tname[:-2])
+            elif tname.endswith("s") and len(tname) > 1:
+                dynamic_entity_keywords.add(tname[:-1])
+            for col in t.get("columns", []):
+                cname = col.get("name", "").lower()
+                if cname.endswith("_id"):
+                    dynamic_entity_keywords.add(cname[:-3])
+
         _single_entity_agg_query = (
             len(code_candidates) == 1 and
             len(str(code_candidates[0])) >= 3 and
-            any(kw in user_text.lower() for kw in [
-                "order", "employee", "product", "item", "customer", "shipment", "payment", "return"
-            ])
+            any(kw in user_text.lower() for kw in dynamic_entity_keywords)
         )
         _is_op = self.operations_analyzer.is_operation_query(user_text)
         if _is_op:
