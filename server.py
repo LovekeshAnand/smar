@@ -42,6 +42,12 @@ from context_layer import ContextLayerEngine, ContextConfig
 from structured_data.adapters import AdapterRegistry, SQLiteStorageAdapter
 from smart_data import SmartDataLayerEngine
 from auth import user_manager
+from cross_cutting import (
+    business_rules_engine,
+    security_access_controller,
+    admin_alert_manager,
+    RESTRICTED_ACCESS_MESSAGE
+)
 
 app = FastAPI(title="SMAR Autonomous Voice Platform", version="2.0.0")
 
@@ -248,6 +254,62 @@ async def process_chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
     user_id = req.user_id or "lovekesh"
+    user_record = user_manager.get_user(user_id)
+    user_name = user_record.get("name") if user_record else user_id.capitalize()
+    user_role = user_record.get("role") if user_record else user_manager.get_user_role(user_id)
+
+    # 0. Pre-Flight Hierarchical RBAC & Security Clearance Gate
+    sec_decision = security_access_controller.evaluate_query_access(
+        user_id=user_id,
+        user_name=user_name,
+        role=user_role,
+        query=user_text
+    )
+    if not sec_decision.is_allowed:
+        denial_reply = sec_decision.denial_message or RESTRICTED_ACCESS_MESSAGE
+        # Broadcast alert to all connected admin dashboards over WebSocket
+        for ws in list(connected_clients):
+            try:
+                await ws.send_json({
+                    "type": "ADMIN_ALERT_TRIGGERED",
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "role": user_role,
+                    "query": user_text,
+                    "resource": sec_decision.resource,
+                    "clearance_required": sec_decision.clearance_required,
+                    "unresolved_count": admin_alert_manager.get_unresolved_count()
+                })
+            except Exception:
+                pass
+
+        denial_audio = None
+        try:
+            ab = await tts_client.synthesize(denial_reply, voice=req.voice or tts_client.voice)
+            if ab:
+                denial_audio = base64.b64encode(ab).decode("utf-8")
+        except Exception:
+            pass
+
+        return {
+            "reply": denial_reply,
+            "spoken_text": denial_reply,
+            "context_used": f"[SECURITY ACCESS DENIED: {sec_decision.resource}]",
+            "retrieval": {},
+            "extracted_facts": [],
+            "audio_base64": denial_audio,
+            "operation_details": None,
+            "table_data": None,
+            "visual_chart": None,
+            "db_context": None,
+            "security_blocked": True,
+            "clearance_required": sec_decision.clearance_required,
+            "smart_data": {
+                "intent": "SECURITY_RESTRICTED",
+                "spoken_confirmation": denial_reply,
+                "elapsed_ms": 15
+            }
+        }
 
     # Detect if user is interacting in Hindi / Hinglish or requested Hindi
     is_hindi_mode = translator.is_hindi_or_hinglish(user_text, req.language)
@@ -264,11 +326,15 @@ async def process_chat(req: ChatRequest):
 
     inventory_context = smart_res.get("context_string")
 
+    # Match relevant enterprise business rules for contextual grounding
+    applicable_rules = business_rules_engine.get_applicable_rules(processed_query)
+
     # 2. Ingest turn, run hybrid retrieval, compose dynamic prompt
     turn_result = context_engine.process_user_turn(
         user_id=user_id,
         user_text=processed_query if processed_query != user_text else user_text,
-        language_hint="en-IN" if is_hindi_mode else (req.language or "en-IN")
+        language_hint="en-IN" if is_hindi_mode else (req.language or "en-IN"),
+        business_rules=applicable_rules
     )
     system_prompt = turn_result["system_prompt"]
     retrieval = turn_result["retrieval"]
@@ -276,8 +342,12 @@ async def process_chat(req: ChatRequest):
     semantic_memories = retrieval.get("semantic_memories", [])
     recent_turns = turn_result.get("recent_turns", [])
 
-    # Assemble rich context: database grounded inventory facts + personal user memory
+    # Assemble rich context: database grounded inventory facts + personal user memory + business rules
     context_blocks = []
+    if applicable_rules:
+        rules_prompt_block = business_rules_engine.format_rules_for_prompt(applicable_rules)
+        if rules_prompt_block:
+            context_blocks.append(rules_prompt_block)
 
     # Numbers found in the verified DB record — used to detect conflicting past notes
     verified_numbers: set = set()
@@ -789,6 +859,104 @@ async def load_inventory_file(file: UploadFile = File(...)):
         "sync_status": res
     }
 
+
+# --- Cross-Cutting Services: Business Rules & Security Endpoints ---
+
+class BusinessRuleCreateRequest(BaseModel):
+    title: str
+    description: str
+    category: Optional[str] = "operations"
+    priority: Optional[int] = 5
+    keywords: Optional[List[str]] = None
+    is_active: Optional[bool] = True
+
+
+class ResolveAlertRequest(BaseModel):
+    resolved_by: Optional[str] = "admin"
+    note: Optional[str] = None
+
+
+@app.get("/api/rules")
+async def list_business_rules(category: Optional[str] = None, active_only: bool = False):
+    """List all registered enterprise business rules."""
+    rules = business_rules_engine.list_rules(category=category, active_only=active_only)
+    return {
+        "rules": rules,
+        "total": len(rules),
+        "categories": ["operations", "pricing", "safety", "returns", "sla"]
+    }
+
+
+@app.post("/api/rules")
+async def create_business_rule(req: BusinessRuleCreateRequest):
+    """Add a new business rule to the engine."""
+    rule = business_rules_engine.add_rule(
+        title=req.title,
+        description=req.description,
+        category=req.category or "operations",
+        priority=req.priority or 5,
+        keywords=req.keywords,
+        is_active=req.is_active if req.is_active is not None else True
+    )
+    return {"status": "SUCCESS", "rule": rule}
+
+
+@app.post("/api/rules/upload")
+async def upload_business_rules_file(file: UploadFile = File(...)):
+    """Upload a raw markdown, text, or JSON file containing business rules."""
+    content_bytes = await file.read()
+    content_str = content_bytes.decode("utf-8", errors="replace")
+    added = business_rules_engine.ingest_rules_document(content_str, source_name=file.filename or "upload")
+    return {
+        "status": "SUCCESS",
+        "added_count": len(added),
+        "added_rules": added
+    }
+
+
+@app.delete("/api/rules/{rule_id}")
+async def delete_business_rule(rule_id: str):
+    """Delete or deactivate a business rule."""
+    success = business_rules_engine.delete_rule(rule_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return {"status": "SUCCESS", "deleted_rule_id": rule_id}
+
+
+@app.get("/api/admin/alerts")
+async def get_admin_security_alerts(status: Optional[str] = None, limit: int = 50):
+    """Retrieve security incident alerts from the Admin Inbox."""
+    alerts = admin_alert_manager.list_alerts(status=status, limit=limit)
+    unresolved = admin_alert_manager.get_unresolved_count()
+    return {
+        "alerts": alerts,
+        "unresolved_count": unresolved,
+        "total": len(alerts)
+    }
+
+
+@app.post("/api/admin/alerts/{alert_id}/resolve")
+async def resolve_security_alert(alert_id: str, req: ResolveAlertRequest):
+    """Mark a security incident as reviewed and resolved."""
+    resolved = admin_alert_manager.resolve_alert(
+        alert_id=alert_id,
+        resolved_by=req.resolved_by or "admin",
+        note=req.note or "Verified by administrator"
+    )
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    return {"status": "SUCCESS", "alert": resolved}
+
+
+@app.get("/api/security/roles")
+async def list_security_roles():
+    """List role hierarchy clearance levels and current users."""
+    from cross_cutting.security_ruleset import ROLE_HIERARCHY
+    users = user_manager.list_users()
+    return {
+        "role_hierarchy": ROLE_HIERARCHY,
+        "users": users
+    }
 
 
 @app.websocket("/ws/live")
