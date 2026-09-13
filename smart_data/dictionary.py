@@ -28,6 +28,12 @@ class DynamicDomainDictionary:
         self.column_domains: Dict[str, Set[str]] = {}
         # Column aliases learned from schema introspection
         self.column_aliases: Dict[str, List[str]] = {}
+        # Numeric/measurable columns per table — populated by KG reload or schema introspection
+        # Used by OperationsAnalyzer for KG-guided aggregation column selection
+        self.numeric_columns_by_table: Dict[str, List[str]] = {}
+        # Foreign key map: table -> list of tables it references
+        # Used by engine for KG-driven cross-table enrichment
+        self.fk_map: Dict[str, List[str]] = {}
         # Generic intent patterns (domain-agnostic)
         self.intent_signals = {
             "OPERATION": [

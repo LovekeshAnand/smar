@@ -309,6 +309,8 @@ class KnowledgeFormationPipeline:
         STRICT POLICY:
         - Only store genuine personal user statements (name, location, job, preferences).
         - NEVER store transactional queries, database lookups, or question-answer pairs.
+        - NEVER store conversational questions about the user's identity — those are handled
+          by the memory retrieval layer at query time, not stored as new memories.
         - Any text mentioning database entity keywords (order, salary, price, employee, etc.)
           is assumed transactional and blocked regardless of phrasing.
         """
@@ -318,27 +320,48 @@ class KnowledgeFormationPipeline:
 
         low = clean.lower()
 
-        # Block pure greetings / chitchat
-        greetings = {"hello", "hi", "hey", "bye", "goodbye", "ok", "okay", "thanks", "thank you",
-                     "naa", "hmm", "uh", "um", "yes", "no", "sure", "alright", "fine"}
-        if low in greetings:
+        # Block very long texts — likely a DB lookup result or system message, not a personal fact
+        if len(clean) > 300:
             return False
 
-        # Block ANY query starting with question words — these are always lookups
+        # Block pure greetings / chitchat / acknowledgements
+        greetings = {
+            "hello", "hi", "hey", "bye", "goodbye", "ok", "okay", "thanks", "thank you",
+            "naa", "hmm", "uh", "um", "yes", "no", "sure", "alright", "fine",
+            "great", "awesome", "nice", "cool", "wow", "got it", "understood"
+        }
+        if low in greetings or low.rstrip("!. ") in greetings:
+            return False
+
+        # Block ANY query starting with question words — these are always lookups, never facts
         if re.match(
-            r"^(?:what|who|where|when|why|how|which|whose|whom|is|are|can|could|"
+            r"^(?:what|who|where|when|why|how|which|whose|whom|is|are|can|could|do|does|did|"
             r"tell\s+me|show\s+me|give\s+me|find|search|check|list|display|get|fetch|"
             r"hi\s+what|hi\s+can|hi\s+how|hi\s+could|hi\s+please|hi\s+i)\b",
             low
         ):
             return False
 
+        # Block identity/memory inquiry phrases — these are QUESTIONS, not facts to store
+        identity_query_patterns = [
+            r"do\s+you\s+(?:have|know)\s+(?:any\s+)?(?:information|info|details?|data)\s+(?:about|on|of|regarding)\s+me",
+            r"what\s+do\s+you\s+know\s+about\s+me",
+            r"do\s+you\s+remember\s+me",
+            r"who\s+am\s+i",
+            r"what\s+is\s+my\s+name",
+            r"let'?s\s+be\s+friends",
+            r"do\s+you\s+have\s+any\s+information\s+who\s+i\s+am",
+        ]
+        if any(re.search(p, low) for p in identity_query_patterns):
+            return False
+
         # Block texts mentioning transactional/warehouse entity keywords
+        # Note: "store" deliberately excluded — "I have a store" is a personal fact worth remembering
         transactional_keywords = {
             "order", "employee", "salary", "price", "stock", "product", "shipment",
             "payment", "promotion", "customer", "supplier", "return", "category",
             "qty", "quantity", "amount", "sum", "count", "avg", "average", "total",
-            "item", "invoice", "bill", "receipt", "transaction", "store", "revenue",
+            "item", "invoice", "bill", "receipt", "transaction", "revenue",
             "profit", "loss", "discount", "refund", "tax", "fee"
         }
         words_in_text = set(re.findall(r'\b[a-z]+\b', low))

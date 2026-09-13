@@ -21,24 +21,24 @@ class OperationsAnalyzer:
     """
 
     AGG_KEYWORDS = {
+        "COUNT": [
+            "count of", "number of", "how many", "total count", "kitne", "kitni",
+            "kitna", "how many entries", "how many records", "sankhya", "kul sankhya", "ginti", "count"
+        ],
         "SUM": [
-            "sum of", "total of", "sum", "total", "kul jod", "total amount",
-            "add up", "combined", "all salaries", "total salary", "overall sum"
+            "sum of", "total of", "sum", "total amount", "kul jod", "total salary",
+            "add up", "combined", "all salaries", "overall sum", "kul milakar", "total"
         ],
         "AVG": [
             "average of", "average", "mean of", "mean", "ausat", "typical"
         ],
         "MIN": [
             "minimum of", "minimum", "min", "lowest", "least", "cheapest",
-            "smallest", "sabse kam", "kam se kam"
+            "smallest", "sabse kam", "kam se kam", "sabse sasta", "sasta"
         ],
         "MAX": [
             "maximum of", "maximum", "max", "highest", "greatest", "most expensive",
-            "top", "biggest", "sabse jyada", "sabse bada"
-        ],
-        "COUNT": [
-            "count of", "number of", "how many", "total count", "kitne", "kitni",
-            "kitna", "how many entries", "how many records"
+            "top", "biggest", "sabse jyada", "sabse bada", "sabse mehnga", "mehnga"
         ]
     }
 
@@ -52,7 +52,8 @@ class OperationsAnalyzer:
         "table format", "show in table", "show table", "list all", "tabular",
         "display table", "in table", "in a table", "as a table", "show records",
         "view table", "list table", "show me all", "display all", "show all",
-        "browse table", "all records", "in tabular format", "table view", "all rows"
+        "browse table", "all records", "in tabular format", "table view", "all rows",
+        "table dikhao", "list dikhao", "records dikhao", "data dikhao", "table me dikhao", "soochi"
     ]
 
     VISUAL_KEYWORDS = [
@@ -84,16 +85,12 @@ class OperationsAnalyzer:
 
         # Check for aggregation signals
         for agg_func, keywords in self.AGG_KEYWORDS.items():
-            if any(kw in lower for kw in keywords):
-                if agg_func in ["SUM", "AVG", "MIN", "MAX"]:
+            for kw in keywords:
+                if kw in ("count", "total"):
+                    if re.search(rf"\b{kw}\b", lower):
+                        return True
+                elif kw in lower:
                     return True
-                if agg_func == "COUNT":
-                    # "how many" is always a COUNT operation (not just point-lookup)
-                    if any(k in lower for k in ["count of", "total count", "number of", "how many records", "how many total"]):
-                        return True
-                    # "how many X" where X is a table/domain entity => COUNT
-                    if "how many" in lower:
-                        return True
 
         # Check for tabular view
         if any(kw in lower for kw in self.TABULAR_KEYWORDS):
@@ -229,7 +226,11 @@ class OperationsAnalyzer:
         detected_agg = None
         for agg_name, keywords in self.AGG_KEYWORDS.items():
             for kw in keywords:
-                if kw in lower:
+                if kw in ("count", "total"):
+                    if re.search(rf"\b{kw}\b", lower):
+                        detected_agg = agg_name
+                        break
+                elif kw in lower:
                     detected_agg = agg_name
                     break
             if detected_agg:

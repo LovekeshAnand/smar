@@ -27,27 +27,25 @@ export const Header: React.FC<HeaderProps> = ({
   isDataReady = true,
 }) => {
   return (
-    <header className="h-20 px-6 flex items-center justify-between border-b border-white/5 bg-slate-950/60 backdrop-blur-md z-30">
-      {/* Brand & Connection Status */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-3.5">
-          <span
-            className={`w-2.5 h-2.5 rounded-full ${
-              isConnected ? "bg-cyan-400 shadow-[0_0_8px_#00f0ff]" : "bg-slate-600"
-            }`}
-          />
+    <header className="h-16 px-6 sm:px-10 flex items-center justify-between border-b border-white/[0.08] bg-zinc-950/75 backdrop-blur-xl z-30">
+      {/* Brand Lockup */}
+      <div className="flex items-center">
+        <a href="/" className="flex items-center gap-2 group cursor-pointer transition-opacity hover:opacity-90" title="Return to Landing Page">
           <img
-            src="/smar_logo_transparent.png"
+            src="/logo.png"
+            onError={(e) => {
+              e.currentTarget.src = "/smar_logo_transparent.png";
+            }}
             alt="smar logo"
-            className="h-14 sm:h-16 w-auto object-contain select-none transition-transform hover:scale-105"
+            className="h-7 sm:h-8 w-auto object-contain select-none transition-transform group-hover:scale-105"
           />
           <span
             style={{ fontFamily: '"Times New Roman", Times, serif', color: "#ffffff" }}
-            className="text-2xl sm:text-3xl font-normal tracking-wide text-white lowercase select-none"
+            className="text-2xl sm:text-[26px] font-normal tracking-normal text-white lowercase select-none"
           >
             smar
           </span>
-        </div>
+        </a>
       </div>
 
       {/* Right Actions: User Badge, Language toggle & Memory drawer toggle */}
@@ -55,16 +53,16 @@ export const Header: React.FC<HeaderProps> = ({
         {/* User Profile Chip */}
         <button
           onClick={onOpenUserModal}
-          className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-mono text-slate-200 transition-all shadow-sm group"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800/90 text-xs font-mono text-zinc-200 transition-all shadow-sm group cursor-pointer"
           title={`Logged in as ${currentUser.name} (@${currentUser.username}). Click to manage users.`}
         >
-          <span className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-300 font-bold flex items-center justify-center text-[10px] border border-cyan-500/30">
+          <span className="w-5 h-5 rounded-full bg-white/10 text-white font-bold flex items-center justify-center text-[10px] border border-white/20">
             {currentUser.username[0]?.toUpperCase() || "L"}
           </span>
-          <span className="font-semibold text-[11px] text-white group-hover:text-cyan-300 transition-colors">
+          <span className="font-medium text-[11px] text-zinc-200 group-hover:text-white transition-colors">
             {currentUser.username}
           </span>
-          <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 uppercase">
+          <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-white/10 text-zinc-300 border border-white/10 uppercase">
             {currentUser.role}
           </span>
         </button>
@@ -72,7 +70,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Language Toggle */}
         <button
           onClick={onToggleLanguage}
-          className="px-2.5 py-1 rounded-full text-[11px] font-mono text-cyan-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+          className="px-3 py-1.5 rounded-full text-[11px] font-mono text-zinc-300 bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800/90 hover:border-zinc-700 transition-colors cursor-pointer"
           title={`Language: ${language === "en-IN" ? "English" : "Hindi"}. Click to toggle.`}
         >
           {language === "en-IN" ? "EN" : "HI"}
@@ -81,10 +79,10 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Memory Drawer Toggle */}
         <button
           onClick={onToggleMemory}
-          className={`px-3 py-1 rounded-full text-xs font-mono transition-all flex items-center gap-1.5 ${
+          className={`px-3.5 py-1.5 rounded-full text-xs font-mono transition-all flex items-center gap-1.5 cursor-pointer ${
             isMemoryOpen
-              ? "bg-white/15 text-white border border-white/20"
-              : "bg-white/5 hover:bg-white/10 text-slate-400 hover:text-slate-200 border border-transparent"
+              ? "bg-white text-zinc-950 font-semibold shadow-md"
+              : "bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800/90 hover:border-zinc-700"
           }`}
           aria-label="Toggle Memory Drawer"
         >
@@ -92,7 +90,7 @@ export const Header: React.FC<HeaderProps> = ({
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-          <span>memory</span>
+          <span>Memory</span>
         </button>
       </div>
     </header>

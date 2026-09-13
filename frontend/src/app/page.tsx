@@ -1,757 +1,326 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { Header } from "@/components/Header";
-import {
-  AudioSpikesVisualizer,
-  VisualizerState,
-} from "@/components/AudioSpikesVisualizer";
-import { ConversationStream, ChatMessage } from "@/components/ConversationStream";
-import {
-  MemoryInspector,
-  KGTriple,
-  VectorMemory,
-  InventoryStatus,
-} from "@/components/MemoryInspector";
-import { UserAuthModal, UserProfile } from "@/components/UserAuthModal";
-import { VoiceController } from "@/components/VoiceController";
-import { encodeWAV } from "@/lib/audio";
+import React from "react";
+import Link from "next/link";
+import { GradientWaves } from "@/components/landing/GradientWaves";
 
-export default function Home() {
-  // Pre-authenticated default user: lovekesh / lovekesh123
-  const [currentUser, setCurrentUser] = useState<UserProfile>({
-    username: "lovekesh",
-    name: "Lovekesh",
-    role: "admin",
-  });
-  const [isUserModalOpen, setIsUserModalOpen] = useState<boolean>(false);
-
-  // State
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "init-msg",
-      role: "assistant",
-      text: "Hello Lovekesh! How can I help you today?",
-      timestamp: "Just now",
-    },
-  ]);
-  const [visualizerState, setVisualizerState] = useState<VisualizerState>("IDLE");
-  const [audioData, setAudioData] = useState<Uint8Array>(new Uint8Array(64));
-  const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [triples, setTriples] = useState<KGTriple[]>([]);
-  const [vectors, setVectors] = useState<VectorMemory[]>([]);
-  const [inventoryStatus, setInventoryStatus] = useState<InventoryStatus | null>(null);
-  const [isMemoryOpen, setIsMemoryOpen] = useState<boolean>(false);
-  const [isConnected, setIsConnected] = useState<boolean>(true);
-  const [language, setLanguage] = useState<string>("en-IN");
-
-  // Audio References
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const audioChunksRef = useRef<Float32Array[]>([]);
-  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
-  const ttsAnalyserRef = useRef<AnalyserNode | null>(null);
-  const isHookedRef = useRef<boolean>(false);
-  const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    // Load stored user or persist lovekesh default
-    try {
-      const saved = localStorage.getItem("smar_user");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed?.username) setCurrentUser(parsed);
-      } else {
-        localStorage.setItem("smar_user", JSON.stringify(currentUser));
-      }
-    } catch {
-      // ignore storage error
-    }
-
-    fetchSystemStatus();
-    fetchMemoryGraph(currentUser.username);
-    fetchMemoryVectors(currentUser.username);
-    fetchInventoryStatus();
-
-    // Setup live WebSocket for automatic real-time memory updates
-    let ws: WebSocket | null = null;
-    try {
-      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsHost = window.location.port === "3000" ? `${window.location.hostname}:5000` : window.location.host;
-      ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/live`);
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "MEMORY_UPDATED" || msg.type === "MEMORY_SYNCED") {
-            fetchMemoryGraph(currentUser.username);
-            fetchMemoryVectors(currentUser.username);
-            fetchInventoryStatus();
-          }
-        } catch {
-          // ignore non-json messages
-        }
-      };
-    } catch (e) {
-      console.warn("WebSocket connection not available:", e);
-    }
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && (e.target as HTMLElement).tagName !== "INPUT") {
-        e.preventDefault();
-        toggleMicrophone();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      if (ws) ws.close();
-    };
-  }, [currentUser.username]);
-
-  const fetchSystemStatus = async () => {
-    try {
-      const res = await fetch("/api/status");
-      if (!res.ok) {
-        setIsConnected(false);
-        return;
-      }
-      setIsConnected(true);
-    } catch {
-      setIsConnected(false);
-    }
-  };
-
-  const fetchMemoryGraph = async (uid?: string) => {
-    try {
-      const targetUid = uid || currentUser.username;
-      const res = await fetch(`/api/memory/graph?user_id=${encodeURIComponent(targetUid)}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setTriples(data.triples || []);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const fetchMemoryVectors = async (uid?: string) => {
-    try {
-      const targetUid = uid || currentUser.username;
-      const res = await fetch(`/api/memory/vectors?user_id=${encodeURIComponent(targetUid)}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setVectors(data.items || []);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const fetchInventoryStatus = async () => {
-    try {
-      const res = await fetch("/api/inventory/status");
-      if (!res.ok) return;
-      const data = await res.json();
-      setInventoryStatus(data);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleUploadFile = async (file: File) => {
-    try {
-      const formData = new FormData();
-      const uploadUrl = typeof window !== "undefined" && window.location.port === "3000"
-        ? `http://${window.location.hostname}:5000/api/data/upload`
-        : "/api/data/upload";
-      const res = await fetch(uploadUrl, {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || "Upload failed");
-      }
-      await fetchInventoryStatus();
-      await fetchMemoryGraph(currentUser.username);
-      await fetchMemoryVectors(currentUser.username);
-    } catch (e) {
-      console.error("Error uploading data file:", e);
-      alert("Failed to load and index file.");
-    }
-  };
-
-  const toggleMicrophone = async () => {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      await startRecording();
-    }
-  };
-
-  const startRecording = async () => {
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioCtx({ sampleRate: 16000 });
-      }
-      if (audioContextRef.current.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true },
-      });
-      micStreamRef.current = stream;
-
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      const analyser = audioContextRef.current.createAnalyser();
-      analyser.fftSize = 128;
-      source.connect(analyser);
-
-      const bufferSize = 4096;
-      const processor = audioContextRef.current.createScriptProcessor(bufferSize, 1, 1);
-      audioChunksRef.current = [];
-
-      processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        audioChunksRef.current.push(new Float32Array(inputData));
-      };
-
-      source.connect(processor);
-      processor.connect(audioContextRef.current.destination);
-      audioProcessorRef.current = processor;
-
-      setIsRecording(true);
-      setVisualizerState("LISTENING");
-
-      // Auto-stop recording at 25 seconds to respect Gnani STT limits
-      if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
-      recordingTimeoutRef.current = setTimeout(() => {
-        if (isRecording) stopRecording();
-      }, 25000);
-
-      // Animation frame update for live audio spikes
-      const dataArr = new Uint8Array(64);
-      const updateSpikes = () => {
-        if (analyser && micStreamRef.current && micStreamRef.current.active) {
-          analyser.getByteFrequencyData(dataArr);
-          setAudioData(new Uint8Array(dataArr));
-          requestAnimationFrame(updateSpikes);
-        }
-      };
-      updateSpikes();
-    } catch (err) {
-      console.error("Mic Access Error:", err);
-      setVisualizerState("IDLE");
-      alert("Microphone permission required for voice communication.");
-    }
-  };
-
-  const stopRecording = async () => {
-    if (recordingTimeoutRef.current) {
-      clearTimeout(recordingTimeoutRef.current);
-      recordingTimeoutRef.current = null;
-    }
-
-    if (!isRecording) return;
-    setIsRecording(false);
-    setVisualizerState("THINKING");
-
-    if (audioProcessorRef.current) {
-      audioProcessorRef.current.disconnect();
-      audioProcessorRef.current = null;
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
-
-    try {
-      const wavBlob = encodeWAV(audioChunksRef.current, 16000);
-      const formData = new FormData();
-      formData.append("audio_file", wavBlob, "input.wav");
-      formData.append("language", language);
-      formData.append("user_id", currentUser.username);
-
-      const voiceUrl = typeof window !== "undefined" && window.location.port === "3000"
-        ? `http://${window.location.hostname}:5000/api/voice/process`
-        : "/api/voice/process";
-
-      const res = await fetch(voiceUrl, { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Voice pipeline failed");
-      const data = await res.json();
-
-      const userMsg: ChatMessage = {
-        id: `user-${Date.now()}`,
-        role: "user",
-        text: data.transcription,
-        timestamp: "Now",
-      };
-
-      const asstMsg: ChatMessage = {
-        id: `asst-${Date.now()}`,
-        role: "assistant",
-        text: data.reply,
-        timestamp: "Now",
-        audioBase64: data.audio_base64,
-        operationDetails: data.operation_details || data.smart_data?.operation_details || null,
-        tableData: data.table_data || data.smart_data?.table_data || null,
-        visualChart: data.visual_chart || data.smart_data?.visual_chart || null,
-      };
-
-      setMessages((prev) => [...prev, userMsg, asstMsg]);
-
-      if (data.audio_base64) {
-        playAudioBase64(data.audio_base64);
-      } else {
-        setVisualizerState("IDLE");
-      }
-
-      fetchMemoryGraph(currentUser.username);
-      fetchMemoryVectors(currentUser.username);
-      setTimeout(() => {
-        fetchMemoryGraph(currentUser.username);
-        fetchMemoryVectors(currentUser.username);
-      }, 1500);
-    } catch {
-      setVisualizerState("IDLE");
-    }
-  };
-
-  const handleTextSubmit = async (text: string) => {
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      text,
-      timestamp: "Now",
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setVisualizerState("THINKING");
-
-    try {
-      const chatUrl = typeof window !== "undefined" && window.location.port === "3000"
-        ? `http://${window.location.hostname}:5000/api/chat`
-        : "/api/chat";
-
-      const res = await fetch(chatUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          language,
-          user_id: currentUser.username,
-        }),
-      });
-      if (!res.ok) throw new Error("Chat failed");
-      const data = await res.json();
-
-      const asstMsg: ChatMessage = {
-        id: `asst-${Date.now()}`,
-        role: "assistant",
-        text: data.reply,
-        timestamp: "Now",
-        audioBase64: data.audio_base64,
-        operationDetails: data.operation_details || data.smart_data?.operation_details || null,
-        tableData: data.table_data || data.smart_data?.table_data || null,
-        visualChart: data.visual_chart || data.smart_data?.visual_chart || null,
-      };
-
-      setMessages((prev) => [...prev, asstMsg]);
-
-      if (data.audio_base64) {
-        playAudioBase64(data.audio_base64);
-      } else {
-        setVisualizerState("IDLE");
-      }
-
-      fetchMemoryGraph(currentUser.username);
-      fetchMemoryVectors(currentUser.username);
-      setTimeout(() => {
-        fetchMemoryGraph(currentUser.username);
-        fetchMemoryVectors(currentUser.username);
-      }, 1500);
-    } catch {
-      setVisualizerState("IDLE");
-    }
-  };
-
-  const playAudioBase64 = (b64: string) => {
-    const player = audioPlayerRef.current;
-    if (!player) return;
-
-    if (!isHookedRef.current) {
-      try {
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        if (!audioContextRef.current) audioContextRef.current = new AudioCtx();
-
-        const src = audioContextRef.current.createMediaElementSource(player);
-        const analyser = audioContextRef.current.createAnalyser();
-        analyser.fftSize = 128;
-        src.connect(analyser);
-        analyser.connect(audioContextRef.current.destination);
-        ttsAnalyserRef.current = analyser;
-        isHookedRef.current = true;
-      } catch (err) {
-        console.warn("Could not hook analyser:", err);
-      }
-    }
-
-    player.src = `data:audio/wav;base64,${b64}`;
-    player
-      .play()
-      .then(() => {
-        setVisualizerState("SPEAKING");
-        const dataArr = new Uint8Array(64);
-        const updateSpeech = () => {
-          if (player && !player.paused && !player.ended) {
-            if (ttsAnalyserRef.current) {
-              ttsAnalyserRef.current.getByteFrequencyData(dataArr);
-              setAudioData(new Uint8Array(dataArr));
-            }
-            requestAnimationFrame(updateSpeech);
-          }
-        };
-        updateSpeech();
-      })
-      .catch((err) => {
-        console.warn("Speech playback error:", err);
-        setVisualizerState("IDLE");
-      });
-  };
-
-  const handleUserChange = (newUser: UserProfile) => {
-    setCurrentUser(newUser);
-    try {
-      localStorage.setItem("smar_user", JSON.stringify(newUser));
-    } catch {
-      // ignore
-    }
-    // Update welcome message
-    setMessages([
-      {
-        id: `welcome-${Date.now()}`,
-        role: "assistant",
-        text: `Welcome, ${newUser.name}! Active user is now @${newUser.username}. How can I help you today?`,
-        timestamp: "Just now",
-      },
-    ]);
-    fetchMemoryGraph(newUser.username);
-    fetchMemoryVectors(newUser.username);
-  };
-
-  const [rightInputText, setRightInputText] = useState("");
-
-  const hasStarted = messages.some((m) => m.role === "user");
-
-  const handleResetSession = () => {
-    setMessages([
-      {
-        id: `welcome-${Date.now()}`,
-        role: "assistant",
-        text: `Hello ${currentUser.name}! How can I help you today?`,
-        timestamp: "Just now",
-      },
-    ]);
-    setVisualizerState("IDLE");
-  };
-
-  const handleRightSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!rightInputText.trim()) return;
-    handleTextSubmit(rightInputText.trim());
-    setRightInputText("");
-  };
-
+export default function LandingPage() {
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none relative">
-      {/* Background ambient radial gradients */}
-      <div className="absolute top-1/4 left-1/3 -translate-x-1/2 w-[550px] h-[550px] bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-1/4 right-1/4 w-[650px] h-[650px] bg-blue-600/5 rounded-full blur-3xl pointer-events-none" />
+    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col selection:bg-white selection:text-black font-sans antialiased">
+      {/* ─── Minimalist Header: Logo Left, Launch Console Right ─────── */}
+      <div className="fixed top-0 left-0 right-0 z-50 flex justify-center px-4 pt-4 sm:pt-6 pointer-events-none">
+        <header className="pointer-events-auto w-full max-w-5xl h-14 px-5 sm:px-6 rounded-full border border-white/[0.1] bg-zinc-950/75 backdrop-blur-xl flex items-center justify-between shadow-[0_8px_32px_rgba(0,0,0,0.6)]">
+          {/* Logo Left */}
+          <Link href="/" className="flex items-center gap-2 group cursor-pointer">
+            <img
+              src="/logo.png"
+              onError={(e) => {
+                e.currentTarget.src = "/smar_logo_transparent.png";
+              }}
+              alt="logo"
+              className="h-7 sm:h-8 w-auto object-contain transition-transform group-hover:scale-105"
+            />
+            <span
+              style={{ fontFamily: '"Times New Roman", Times, serif', color: "#ffffff" }}
+              className="text-2xl sm:text-[26px] font-normal tracking-normal text-white lowercase select-none"
+            >
+              smar
+            </span>
+          </Link>
 
-      {/* Header with User Badge, Language toggle, and Memory Drawer */}
-      <Header
-        onToggleMemory={() => setIsMemoryOpen((prev) => !prev)}
-        isMemoryOpen={isMemoryOpen}
-        isConnected={isConnected}
-        language={language}
-        onToggleLanguage={() => setLanguage((prev) => (prev === "en-IN" ? "hi-IN" : "en-IN"))}
-        currentUser={currentUser}
-        onOpenUserModal={() => setIsUserModalOpen(true)}
-        onToggleDataUpload={() => setIsMemoryOpen(true)}
-        isDataReady={inventoryStatus?.ready_to_answer ?? true}
-      />
-
-      {/* Main Stage with Cinematic Split Animation */}
-      <main className="flex-1 w-full h-[calc(100vh-80px)] overflow-hidden relative z-10 px-3 sm:px-6 pb-4 pt-2">
-        <div
-          className={`w-full h-full flex flex-col lg:flex-row gap-5 items-stretch transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-            hasStarted ? "justify-between" : "justify-center items-center"
-          }`}
-        >
-          {/* ========================================================================= */}
-          {/* ORB / VOICE HUB PANEL: Centered Initially -> Smoothly Glides to Left Pane */}
-          {/* ========================================================================= */}
-          <div
-            className={`transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col items-center ${
-              hasStarted
-                ? "w-full lg:w-[380px] xl:w-[410px] shrink-0 h-full bg-slate-900/60 backdrop-blur-xl border border-slate-800/90 rounded-3xl p-5 shadow-2xl justify-between overflow-y-auto custom-scrollbar animate-in fade-in slide-in-from-left-6"
-                : "w-full max-w-xl mx-auto my-auto justify-center"
-            }`}
+          {/* Get Started Right */}
+          <Link
+            href="/console"
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-medium bg-white text-zinc-950 hover:bg-zinc-200 transition-all shadow-sm active:scale-95 cursor-pointer"
           >
-            {/* Top State Badge when in Split Mode */}
-            {hasStarted && (
-              <div className="w-full flex items-center justify-between pb-2 mb-2 border-b border-slate-800/70 shrink-0">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      visualizerState === "LISTENING"
-                        ? "bg-cyan-400 animate-ping"
-                        : visualizerState === "THINKING"
-                        ? "bg-purple-400 animate-pulse"
-                        : visualizerState === "SPEAKING"
-                        ? "bg-rose-400 animate-bounce"
-                        : "bg-emerald-400"
-                    }`}
-                  />
-                  <span className="text-[11px] font-mono tracking-wider text-slate-300 font-semibold uppercase">
-                    {visualizerState === "LISTENING"
-                      ? "Listening..."
-                      : visualizerState === "THINKING"
-                      ? "Thinking..."
-                      : visualizerState === "SPEAKING"
-                      ? "Speaking..."
-                      : "Voice Standby"}
-                  </span>
-                </div>
+            <span>Get Started</span>
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
+          </Link>
+        </header>
+      </div>
 
-                <span className="text-[10px] font-mono text-cyan-400/80 bg-cyan-950/40 border border-cyan-800/30 px-2 py-0.5 rounded-full">
-                  {language === "en-IN" ? "English (IN)" : "Hindi (IN)"}
-                </span>
-              </div>
-            )}
+      {/* ─── Hero Section with Vibrant GradientWaves WebGL ─────────────── */}
+      <section className="relative min-h-[96vh] flex flex-col items-center justify-center text-center px-4 sm:px-6 pt-24 pb-16 overflow-hidden">
+        {/* Dynamic Gradient Waves WebGL (Vibrant, Fully Visible) */}
+        <div className="absolute inset-0 z-0">
+          <GradientWaves
+            horizonColor="#5227FF"
+            waveColor="#FF9FFC"
+            crestColor="#FFFFFF"
+            speed={0.35}
+            amplitude={2.5}
+            waveScale={0.6}
+            waveRatio={0.9}
+            swell={35}
+            turbulence={20}
+            tilt={1.11}
+            zoom={1.0}
+            height={5.2}
+            fogDepth={15}
+            detail="medium"
+            brightness={1.05}
+            opacity={0.9}
+            mouseInteraction={true}
+            parallaxStrength={0.45}
+            grain={true}
+            grainIntensity={0.04}
+            className="w-full h-full"
+          />
+        </div>
 
-            {/* Spike Orb Visualizer */}
-            <div className="shrink-0 flex flex-col items-center justify-center my-1 relative">
-              <AudioSpikesVisualizer state={visualizerState} audioData={audioData} />
-            </div>
+        {/* Subtle Bottom Gradient Fade into Content */}
+        <div className="absolute inset-x-0 bottom-0 h-44 z-[1] bg-gradient-to-t from-[#09090b] via-[#09090b]/70 to-transparent pointer-events-none" />
 
-            {/* INITIAL CENTERED VIEW CONTENT (Hidden once hasStarted is true) */}
-            {!hasStarted && (
-              <div className="w-full flex flex-col items-center text-center mt-2 space-y-6 animate-in fade-in duration-500">
-                <div>
-                  <h1 className="text-2xl sm:text-3xl font-light text-slate-100 tracking-tight">
-                    Hello, <span className="font-semibold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">{currentUser.name}</span>
-                  </h1>
-                  <p className="text-xs sm:text-sm text-slate-400 font-light mt-1 max-w-md">
-                    Voice-driven cognitive intelligence & operations engine
-                  </p>
-                </div>
+        {/* Hero Content (Ultra-Clean, Concise, No Latency Mentions) */}
+        <div className="relative z-10 max-w-4xl mx-auto flex flex-col items-center space-y-6 animate-in fade-in duration-700">
+          {/* Headline: Both Lines White with Subtle Gradient */}
+          <h1 className="text-3xl sm:text-5xl md:text-6xl font-normal tracking-[-0.03em] leading-[1.18] max-w-4xl mx-auto drop-shadow-[0_4px_30px_rgba(0,0,0,0.8)]">
+            <span className="bg-clip-text text-transparent bg-gradient-to-b from-white via-white/95 to-zinc-200 block">
+              Autonomous Voice Engine
+            </span>
+            <span className="bg-clip-text text-transparent bg-gradient-to-b from-white/95 via-white/85 to-zinc-300 block mt-1 font-light">
+              for Enterprise Data
+            </span>
+          </h1>
 
-                {/* Centered Voice Controller & Input */}
-                <div className="w-full max-w-md pt-2">
-                  <VoiceController
-                    isRecording={isRecording}
-                    onToggleRecord={toggleMicrophone}
-                    onSubmitText={handleTextSubmit}
-                  />
-                  <p className="text-[11px] font-mono text-slate-500 mt-2">
-                    Press Space to talk or type query
-                  </p>
-                </div>
-              </div>
-            )}
+          {/* Expanded Subtitle: AI Voice Assistant that Remembers and Executes Operations */}
+          <p className="max-w-3xl mx-auto text-base sm:text-lg text-zinc-300 font-normal leading-relaxed tracking-tight drop-shadow-[0_2px_14px_rgba(0,0,0,0.9)]">
+            An autonomous AI voice assistant that doesn&apos;t just answer queries from your data,
+            but remembers context, executes complex operations, and audits live records in real&nbsp;time.
+          </p>
 
-            {/* SPLIT STAGE LEFT PANEL CONTROLS (Shown when hasStarted is true) */}
-            {hasStarted && (
-              <div className="w-full flex flex-col items-center gap-4 mt-2 shrink-0">
-                {/* Voice Push-To-Talk Button */}
-                <div className="flex flex-col items-center gap-1.5">
-                  <button
-                    onClick={toggleMicrophone}
-                    className={`relative w-16 h-16 rounded-full flex items-center justify-center group focus:outline-none transition-transform active:scale-95 ${
-                      isRecording ? "shadow-[0_0_35px_rgba(0,240,255,0.8)]" : ""
-                    }`}
-                    title="Click or press Spacebar to speak"
-                  >
-                    {isRecording && (
-                      <span className="absolute inset-0 rounded-full border border-cyan-400/80 animate-ping pointer-events-none" />
-                    )}
-                    <div
-                      className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-300 ${
-                        isRecording
-                          ? "bg-gradient-to-r from-cyan-400 to-blue-500 text-black shadow-lg"
-                          : "bg-slate-800/90 hover:bg-slate-800 text-slate-200 border border-slate-700/80 shadow-md hover:border-cyan-500/40"
-                      }`}
-                    >
-                      <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </svg>
-                    </div>
-                  </button>
-                  <span className="text-[11px] font-mono text-slate-400">
-                    {isRecording ? "Listening now... Click to send" : "Tap mic or hold Space"}
-                  </span>
-                </div>
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-center justify-center gap-3.5 pt-2">
+            <Link
+              href="/console"
+              className="group relative inline-flex items-center gap-2 px-7 py-3 rounded-full text-xs sm:text-sm font-medium 
+                         bg-white text-zinc-950 hover:bg-zinc-100 
+                         shadow-[0_0_25px_rgba(255,255,255,0.2),inset_0_1px_0_rgba(255,255,255,1)] 
+                         transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+            >
+              <span>Get Started</span>
+              <svg 
+                className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="2.5"
+              >
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </Link>
 
-                {/* System & Telemetry Card */}
-                <div className="w-full bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3 text-left space-y-2">
-                  <div className="flex items-center justify-between text-[11px] font-mono">
-                    <span className="text-slate-400 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      Warehouse DB
-                    </span>
-                    <span className="text-cyan-400 font-medium">1.59M rows ready</span>
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] font-mono">
-                    <span className="text-slate-400 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                      Inference Engine
-                    </span>
-                    <span className="text-slate-200">Qwen 2.5 7B</span>
-                  </div>
-                  <button
-                    onClick={() => setIsMemoryOpen(true)}
-                    className="w-full mt-1 py-1.5 px-2.5 rounded-xl bg-white/[0.04] hover:bg-cyan-950/40 border border-white/10 hover:border-cyan-500/40 text-[11px] font-mono text-cyan-300 flex items-center justify-center gap-1.5 transition-all"
-                  >
-                    <span>Inspect Knowledge Memory</span>
-                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <polyline points="9 18 15 12 9 6" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ========================================================================= */}
-          {/* RIGHT CHAT & OPERATIONS CANVAS: Slides In & Expands on First Question     */}
-          {/* ========================================================================= */}
-          <div
-            className={`transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col bg-slate-900/40 backdrop-blur-xl border border-slate-800/80 rounded-3xl shadow-2xl overflow-hidden ${
-              hasStarted
-                ? "flex-1 min-w-0 h-full opacity-100 translate-x-0 p-4 sm:p-5"
-                : "w-0 h-0 p-0 opacity-0 translate-x-12 pointer-events-none overflow-hidden hidden lg:flex"
-            }`}
-          >
-            {hasStarted && (
-              <>
-                {/* Chat & Canvas Header */}
-                <div className="flex items-center justify-between pb-3 mb-2 border-b border-slate-800/70 shrink-0">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-sm shadow-cyan-400" />
-                    <h2 className="text-sm font-semibold font-mono tracking-wide text-slate-100">
-                      Operations & Chat Stream
-                    </h2>
-                    <span className="text-[10px] font-mono text-slate-400 bg-slate-800/80 border border-slate-700/60 px-2 py-0.5 rounded-full">
-                      {messages.length} messages
-                    </span>
-                  </div>
-
-                  {/* Reset to Centered View Button */}
-                  <button
-                    onClick={handleResetSession}
-                    className="inline-flex items-center gap-1.5 text-xs font-mono text-slate-400 hover:text-slate-200 bg-slate-800/40 hover:bg-slate-800/80 border border-slate-700/60 hover:border-slate-600 px-2.5 py-1 rounded-xl transition-all"
-                    title="Return to centered hero view"
-                  >
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                      <path d="M3 3v5h5" />
-                    </svg>
-                    <span>Center View</span>
-                  </button>
-                </div>
-
-                {/* Scrollable Conversation Stream */}
-                <div className="flex-1 w-full min-h-0 overflow-hidden flex flex-col">
-                  <ConversationStream
-                    messages={messages}
-                    onPlayAudio={playAudioBase64}
-                    className="flex-1 w-full overflow-y-auto px-1 sm:px-2 py-2 space-y-4 custom-scrollbar"
-                  />
-                </div>
-
-                {/* Bottom Follow-up Input Bar */}
-                <form onSubmit={handleRightSubmit} className="mt-1 shrink-0">
-                  <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-700/60 focus-within:border-cyan-400/60 rounded-2xl px-3 py-2 transition-all shadow-inner">
-                    <button
-                      type="button"
-                      onClick={toggleMicrophone}
-                      className={`p-2 rounded-xl transition-all ${
-                        isRecording
-                          ? "bg-cyan-500 text-black animate-pulse"
-                          : "text-slate-400 hover:text-cyan-400 hover:bg-white/5"
-                      }`}
-                      title={isRecording ? "Stop recording" : "Record voice (or Space)"}
-                    >
-                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </svg>
-                    </button>
-
-                    <input
-                      type="text"
-                      value={rightInputText}
-                      onChange={(e) => setRightInputText(e.target.value)}
-                      placeholder="Ask follow-up query or execute complex aggregation..."
-                      className="flex-1 bg-transparent border-none outline-none text-slate-100 placeholder:text-slate-500 text-xs sm:text-sm font-sans"
-                    />
-
-                    <button
-                      type="submit"
-                      disabled={!rightInputText.trim()}
-                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-semibold text-xs tracking-wide transition-all disabled:opacity-30 disabled:pointer-events-none flex items-center gap-1.5 shadow-md shadow-cyan-500/20"
-                    >
-                      <span>Send</span>
-                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <line x1="22" y1="2" x2="11" y2="13" />
-                        <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                      </svg>
-                    </button>
-                  </div>
-                </form>
-              </>
-            )}
+            <a
+              href="#platform"
+              className="inline-flex items-center gap-2 px-7 py-3 rounded-full text-xs sm:text-sm font-normal 
+                         text-zinc-200 bg-zinc-950/60 hover:bg-zinc-900/80 
+                         border border-white/15 hover:border-white/30 
+                         backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] 
+                         transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+            >
+              <svg className="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="6 3 20 12 6 21 6 3" />
+              </svg>
+              <span>Explore Architecture</span>
+            </a>
           </div>
         </div>
-      </main>
+      </section>
 
-      {/* Multi-User Login & Switcher Modal */}
-      <UserAuthModal
-        isOpen={isUserModalOpen}
-        onClose={() => setIsUserModalOpen(false)}
-        currentUser={currentUser}
-        onUserChange={handleUserChange}
-      />
+      {/* ─── Modern Bento Grid ($2B AI Startup Design) ───────────────────── */}
+      <section id="platform" className="py-24 px-6 sm:px-12 max-w-7xl mx-auto w-full relative z-20">
+        <div className="max-w-3xl mb-16 space-y-3">
+          <p className="text-xs font-mono uppercase tracking-widest text-zinc-400">
+            Autonomous Infrastructure
+          </p>
+          <h2 className="text-3xl sm:text-5xl font-semibold tracking-tight text-white leading-tight">
+            Conversational Intelligence Engineered for Enterprise Production
+          </h2>
+          <p className="text-zinc-400 text-base font-normal leading-relaxed">
+            Eliminate complex SQL interfaces and stale BI dashboards. Empower operators to command,
+            query, and audit physical business data through real-time conversational agents.
+          </p>
+        </div>
 
-      {/* Slide-over Cognitive & Surprise Data Inspector */}
-      <MemoryInspector
-        isOpen={isMemoryOpen}
-        onClose={() => setIsMemoryOpen(false)}
-        triples={triples}
-        vectors={vectors}
-        inventoryStatus={inventoryStatus}
-        onRefreshGraph={() => fetchMemoryGraph(currentUser.username)}
-        onRefreshVectors={() => fetchMemoryVectors(currentUser.username)}
-        onRefreshInventory={fetchInventoryStatus}
-        onUploadFile={handleUploadFile}
-        currentUsername={currentUser.username}
-      />
+        {/* 6 High-End Neomorphic Bento Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Card 1: Row Provenance */}
+          <div className="p-7 rounded-2xl bg-zinc-950/60 border border-white/[0.08] hover:border-white/[0.16] 
+                          shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_24px_-12px_rgba(0,0,0,0.8)] 
+                          transition-all duration-300 flex flex-col justify-between group backdrop-blur-sm">
+            <div>
+              <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-center text-zinc-200 mb-5">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <ellipse cx="12" cy="5" rx="9" ry="3" />
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">Auditable Database Provenance</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Every calculation and record lookup reveals the active database file, queried table,
+                and exact physical row ID directly on the response bubble.
+              </p>
+            </div>
+            <div className="mt-6 p-3 rounded-xl bg-zinc-900/80 border border-white/[0.06] font-mono text-[11px] text-zinc-300 flex items-center justify-between">
+              <span>smar_inventory.db / employees</span>
+              <span className="text-zinc-400">Row #48</span>
+            </div>
+          </div>
 
-      {/* Hidden audio element for speech playback */}
-      <audio
-        ref={audioPlayerRef}
-        onEnded={() => {
-          setVisualizerState("IDLE");
-          setAudioData(new Uint8Array(64));
-        }}
-        className="hidden"
-      />
+          {/* Card 2: Voice Pipeline */}
+          <div className="p-7 rounded-2xl bg-zinc-950/60 border border-white/[0.08] hover:border-white/[0.16] 
+                          shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_24px_-12px_rgba(0,0,0,0.8)] 
+                          transition-all duration-300 flex flex-col justify-between group backdrop-blur-sm">
+            <div>
+              <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-center text-zinc-200 mb-5">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" x2="12" y1="19" y2="22" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">Voice AI Agent</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Natural bidirectional speech interaction equipped with live frequency visualizers,
+                hands-free voice control, and real-time English and Hindi neural translation.
+              </p>
+            </div>
+            <div className="mt-6 p-3 rounded-xl bg-zinc-900/80 border border-white/[0.06] font-mono text-[11px] text-zinc-300 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                Streaming Visualizer
+              </span>
+              <span className="text-zinc-400">Multilingual</span>
+            </div>
+          </div>
+
+          {/* Card 3: Deterministic Ground Truth */}
+          <div className="p-7 rounded-2xl bg-zinc-950/60 border border-white/[0.08] hover:border-white/[0.16] 
+                          shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_24px_-12px_rgba(0,0,0,0.8)] 
+                          transition-all duration-300 flex flex-col justify-between group backdrop-blur-sm">
+            <div>
+              <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-center text-zinc-200 mb-5">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  <path d="m9 12 2 2 4-4" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">Zero-Hallucination Execution</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Queries compile deterministically into validated SQL statements against physical records.
+                Operators can inspect, audit, and copy exact query statements with one click.
+              </p>
+            </div>
+            <div className="mt-6 p-3 rounded-xl bg-zinc-900/80 border border-white/[0.06] font-mono text-[11px] text-zinc-300 flex items-center justify-between">
+              <span className="truncate max-w-[190px]">SELECT * FROM warehouse...</span>
+              <span className="text-zinc-400">1-Click SQL</span>
+            </div>
+          </div>
+
+          {/* Card 4: Dynamic Knowledge Graph */}
+          <div className="p-7 rounded-2xl bg-zinc-950/60 border border-white/[0.08] hover:border-white/[0.16] 
+                          shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_24px_-12px_rgba(0,0,0,0.8)] 
+                          transition-all duration-300 flex flex-col justify-between group backdrop-blur-sm">
+            <div>
+              <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-center text-zinc-200 mb-5">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <circle cx="6" cy="6" r="3" />
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="18" cy="6" r="3" />
+                  <line x1="8.5" x2="15.5" y1="7.5" y2="16.5" />
+                  <line x1="9" x2="15" y1="6" y2="6" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">Zero-ETL Adaptive Graphs</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Eliminates brittle ETL pipelines. The secondary indexing graph adapts dynamically
+                to schema changes, warehouse mutations, and custom relational schemas in real time.
+              </p>
+            </div>
+            <div className="mt-6 p-3 rounded-xl bg-zinc-900/80 border border-white/[0.06] font-mono text-[11px] text-zinc-300 flex items-center justify-between">
+              <span>Dual-Graph Architecture</span>
+              <span className="text-zinc-400">Continuous Sync</span>
+            </div>
+          </div>
+
+          {/* Card 5: High Performance */}
+          <div className="p-7 rounded-2xl bg-zinc-950/60 border border-white/[0.08] hover:border-white/[0.16] 
+                          shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_24px_-12px_rgba(0,0,0,0.8)] 
+                          transition-all duration-300 flex flex-col justify-between group backdrop-blur-sm">
+            <div>
+              <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-center text-zinc-200 mb-5">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">Instant Response Latency</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Engineered for rapid data retrieval across millions of warehouse rows. Delivers
+                instant aggregated KPIs, multi-table joins, and complex mutations in milliseconds.
+              </p>
+            </div>
+            <div className="mt-6 p-3 rounded-xl bg-zinc-900/80 border border-white/[0.06] font-mono text-[11px] text-zinc-300 flex items-center justify-between">
+              <span>Operational Pipeline</span>
+              <span className="text-emerald-400 font-medium">Real-time</span>
+            </div>
+          </div>
+
+          {/* Card 6: Enterprise Security */}
+          <div className="p-7 rounded-2xl bg-zinc-950/60 border border-white/[0.08] hover:border-white/[0.16] 
+                          shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_24px_-12px_rgba(0,0,0,0.8)] 
+                          transition-all duration-300 flex flex-col justify-between group backdrop-blur-sm">
+            <div>
+              <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-white/[0.08] flex items-center justify-center text-zinc-200 mb-5">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">Airgapped & Private VPC Ready</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Designed to operate completely within your enterprise security perimeter. All speech
+                models, database connections, and index caches run locally with zero telemetry egress.
+              </p>
+            </div>
+            <div className="mt-6 p-3 rounded-xl bg-zinc-900/80 border border-white/[0.06] font-mono text-[11px] text-zinc-300 flex items-center justify-between">
+              <span>Security Perimeter</span>
+              <span className="text-zinc-400">Zero Data Leakage</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Minimalist Executive CTA Block */}
+        <div className="mt-20 p-8 sm:p-10 rounded-3xl bg-zinc-950/80 border border-white/[0.1] shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-6">
+          <div className="space-y-1 text-center sm:text-left">
+            <h4 className="text-xl font-semibold text-white">Experience SMAR in Real Time</h4>
+            <p className="text-xs text-zinc-400">
+              Launch the live interactive workspace with real database queries, voice synthesis, and row provenance.
+            </p>
+          </div>
+          <Link
+            href="/console"
+            className="px-7 py-3 rounded-full text-xs font-semibold bg-white text-zinc-950 hover:bg-zinc-200 transition-all shadow-lg shrink-0 cursor-pointer"
+          >
+            Get Started →
+          </Link>
+        </div>
+      </section>
+
+      {/* ─── Ultra-Clean Minimalist Footer ──────────────────────────────── */}
+      <footer className="border-t border-white/[0.08] py-8 px-6 sm:px-12 bg-zinc-950 text-xs font-mono text-zinc-500 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-zinc-300">SMAR</span>
+          <span>© {new Date().getFullYear()}</span>
+        </div>
+        <div className="flex items-center gap-6">
+          <a href="#platform" className="hover:text-zinc-300 transition-colors">Platform</a>
+          <Link href="/console" className="hover:text-zinc-300 transition-colors">Console</Link>
+          <span className="text-zinc-400">Enterprise AI Infrastructure</span>
+        </div>
+      </footer>
     </div>
   );
 }

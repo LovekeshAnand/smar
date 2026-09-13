@@ -28,22 +28,22 @@ class AdaptiveDataVisualizer:
     adapting to any dataset shape.
     """
 
-    # Modern dark theme color palette matching Next.js 15 UI
-    BG_COLOR = "#0f172a"        # slate-900
-    PANEL_COLOR = "#1e293b"     # slate-800
-    TEXT_COLOR = "#f8fafc"      # slate-50
-    MUTED_TEXT = "#94a3b8"      # slate-400
-    GRID_COLOR = "#334155"      # slate-700
+    # Modern zinc dark theme matching Next.js executive UI
+    BG_COLOR = "#09090b"        # zinc-950
+    PANEL_COLOR = "#121215"     # subtle dark panel
+    TEXT_COLOR = "#fafafa"      # zinc-50
+    MUTED_TEXT = "#a1a1aa"      # zinc-400
+    GRID_COLOR = "#27272a"      # zinc-800
     
     PALETTE = [
-        "#06b6d4",  # cyan-500
-        "#8b5cf6",  # violet-500
-        "#3b82f6",  # blue-500
-        "#10b981",  # emerald-500
+        "#6366f1",  # indigo-500
+        "#38bdf8",  # sky-400
+        "#a855f7",  # purple-500
+        "#34d399",  # emerald-400
         "#f43f5e",  # rose-500
-        "#f59e0b",  # amber-500
-        "#ec4899",  # pink-500
-        "#14b8a6",  # teal-500
+        "#fbbf24",  # amber-400
+        "#818cf8",  # indigo-400
+        "#2dd4bf",  # teal-400
     ]
 
     def _setup_figure_theme(self, fig, ax):
@@ -51,17 +51,17 @@ class AdaptiveDataVisualizer:
         fig.patch.set_facecolor(self.BG_COLOR)
         if ax is not None:
             ax.set_facecolor(self.PANEL_COLOR)
-            ax.tick_params(colors=self.MUTED_TEXT, labelsize=9)
+            ax.tick_params(colors=self.MUTED_TEXT, labelsize=9.5, width=0.8)
             for spine in ax.spines.values():
                 spine.set_color(self.GRID_COLOR)
                 spine.set_linewidth(0.8)
-            ax.yaxis.grid(True, linestyle="--", alpha=0.3, color=self.GRID_COLOR)
+            ax.yaxis.grid(True, linestyle=":", alpha=0.25, color=self.GRID_COLOR)
             ax.xaxis.grid(False)
 
     def _to_base64_png(self, fig) -> str:
         """Converts matplotlib figure directly into a Base64 data URL string."""
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=160, bbox_inches="tight", facecolor=fig.get_facecolor(), edgecolor="none")
+        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", pad_inches=0.15, facecolor=fig.get_facecolor(), edgecolor="none")
         plt.close(fig)
         buf.seek(0)
         encoded = base64.b64encode(buf.getvalue()).decode("utf-8")

@@ -14,6 +14,7 @@ Coordinates:
 6. Continuous Learning & KG Write-back.
 """
 
+import os
 import re
 import time
 import logging
@@ -73,24 +74,210 @@ class SmartDataLayerEngine:
         # Sync initial state if tables already exist
         self.refresh_schema()
 
-    def refresh_schema(self) -> None:
-        """Dynamically learns from whatever tables exist in the warehouse or primary adapter."""
+    def refresh_schema(self, force: bool = False) -> None:
+        """
+        Dynamically learns from whatever tables exist in the warehouse or primary adapter.
+
+        BOOT CACHE STRATEGY:
+        - Computes a lightweight schema fingerprint (DB mtime + table names + row counts) in ~5ms.
+        - If fingerprint matches the KG-stored value: reloads vocabulary from KG triples (~20ms).
+        - If mismatch or force=True: runs full DB introspection, writes new fingerprint to KG.
+        This prevents re-scanning a 1M+ row warehouse on every server restart.
+        """
         try:
-            # 1. Check warehouse tables
+            fingerprint = self._compute_schema_fingerprint()
+
+            if not force and fingerprint and fingerprint == self._get_stored_fingerprint():
+                # --- FAST PATH: schema unchanged, reload vocab from KG triples ---
+                reloaded = self.schema_introspector.reload_vocab_from_kg(self.domain_dict)
+                if reloaded:
+                    logger.info("Schema vocab reloaded from KG cache (fingerprint match). DB scan skipped.")
+                    return
+                # KG empty or error — fall through to full introspection
+                logger.info("KG cache empty or stale, falling back to full schema introspection.")
+
+            # --- SLOW PATH: full introspection + KG write + fingerprint update ---
             tables = self.warehouse_manager.list_tables()
             if tables:
                 self.domain_dict.learn_from_schema({"tables": tables})
 
-            # 2. Check primary adapter if registered
             primary = self.registry.get_primary()
             if primary:
                 schema = primary.introspect_schema()
                 self.domain_dict.learn_from_schema(schema)
                 self.schema_introspector.introspect_and_sync(primary)
 
-            logger.info("SmartDataLayerEngine refreshed schema dynamically.")
+            # Introspect multi-table FK relationships into KG
+            if tables:
+                self.schema_introspector.introspect_multi_table(
+                    self.warehouse_manager, schema_user_id="system_schema"
+                )
+
+            if fingerprint:
+                self._store_fingerprint(fingerprint)
+
+            logger.info("SmartDataLayerEngine refreshed schema dynamically (full introspection).")
+
         except Exception as e:
             logger.debug(f"Initial schema refresh note: {e}")
+
+    def _compute_schema_fingerprint(self) -> str:
+        """
+        Computes a fast (~5ms) schema fingerprint: hash of table names + row counts.
+        If the warehouse DB file modification time is available, it's included too.
+        Returns empty string on any error.
+        """
+        import hashlib
+        import os
+        try:
+            tables = self.warehouse_manager.list_tables()
+            # Stable sort for deterministic hash
+            table_sigs = sorted(
+                f"{t['table_name']}:{t.get('row_count', 0)}" for t in tables
+            )
+            raw = "|".join(table_sigs)
+
+            # Include DB file mtime if accessible
+            db_path = getattr(self.warehouse_manager, "db_path", None)
+            if db_path and os.path.exists(db_path):
+                raw += f"|mtime={int(os.path.getmtime(db_path))}"
+
+            return hashlib.md5(raw.encode()).hexdigest()
+        except Exception:
+            return ""
+
+    def _get_stored_fingerprint(self) -> str:
+        """Retrieves the last stored schema fingerprint from the KG."""
+        if not self.context_store:
+            return ""
+        try:
+            triples = self.context_store.query_triples_for_entities(
+                user_id="system_schema",
+                entities=["schema_fingerprint"],
+                limit=5
+            )
+            for t in triples:
+                if t.get("predicate") == "last_hash":
+                    return t.get("object", "")
+            return ""
+        except Exception:
+            return ""
+
+    def _store_fingerprint(self, fingerprint: str) -> None:
+        """Persists the schema fingerprint into the KG for next-startup comparison."""
+        if not self.context_store or not fingerprint:
+            return
+        try:
+            self.context_store.upsert_triple(
+                user_id="system_schema",
+                subject="schema_fingerprint",
+                predicate="last_hash",
+                object_val=fingerprint,
+                confidence=1.0
+            )
+        except Exception as e:
+            logger.debug(f"Could not store schema fingerprint: {e}")
+
+    def _get_related_tables_from_kg(self, source_table: str) -> List[str]:
+        """
+        Returns tables that source_table references via FK, read from KG triples.
+        Used for KG-guided cross-table enrichment instead of hardcoded table lists.
+        """
+        # First check in-memory fk_map (populated during KG reload)
+        fk_map = getattr(self.domain_dict, "fk_map", {})
+        if source_table in fk_map:
+            return fk_map[source_table]
+
+        # Fall back to live KG query
+        if not self.context_store:
+            return []
+        try:
+            triples = self.context_store.query_triples_for_entities(
+                user_id="system_schema",
+                entities=[source_table],
+                limit=20
+            )
+            related = [
+                t["object"] for t in triples
+                if t.get("predicate") in ("references_table", "foreign_key_to")
+                and t.get("subject", "").split(".")[0] == source_table
+            ]
+            # Deduplicate + strip column suffixes (foreign_key_to stores "ref_table.ref_col")
+            return list({r.split(".")[0] for r in related})
+        except Exception:
+            return []
+
+    def _resolve_target_table_from_kg(self, entity_name: str) -> Optional[str]:
+        """
+        Query KG to resolve an entity or column name to its owning table name.
+        Uses KG schema triples to adaptively route queries without hardcoding.
+        """
+        if not entity_name:
+            return None
+        canon = entity_name.lower().strip()
+        if canon in self.domain_dict.column_to_table:
+            return self.domain_dict.column_to_table[canon]
+
+        if not self.context_store:
+            return None
+        try:
+            triples = self.context_store.query_triples_for_entities(
+                user_id="system_schema",
+                entities=[canon, f"*.{canon}"],
+                limit=15
+            )
+            for t in triples:
+                if t.get("predicate") in ("table_name", "belongs_to_table", "in_table", "column_of"):
+                    return t.get("object")
+                subj = t.get("subject", "")
+                if "." in subj and subj.split(".", 1)[-1].lower() == canon:
+                    return subj.split(".", 1)[0]
+        except Exception:
+            pass
+        return None
+
+    def _get_numeric_columns_from_kg(self, table: str) -> List[str]:
+        """
+        Returns numeric columns for a table from KG schema triples.
+        Used by OperationsAnalyzer for adaptive aggregation column selection.
+        """
+        # Check in-memory cache first
+        numeric_map = getattr(self.domain_dict, "numeric_columns_by_table", {})
+        if table in numeric_map:
+            return numeric_map[table]
+
+        if not self.context_store:
+            return []
+        try:
+            triples = self.context_store.query_triples_for_entities(
+                user_id="system_schema",
+                entities=[f"{table}.*", table],
+                limit=60
+            )
+            numeric_cols = []
+            for t in triples:
+                if (t.get("predicate") == "has_data_type"
+                        and t.get("object", "").upper() in
+                        ("REAL", "INTEGER", "NUMERIC", "FLOAT", "INT", "DOUBLE", "DECIMAL")
+                        and "." in t.get("subject", "")):
+                    col = t["subject"].split(".", 1)[-1]
+                    if col not in numeric_cols:
+                        numeric_cols.append(col)
+            return numeric_cols
+        except Exception:
+            return []
+
+    def _get_active_db_name(self) -> str:
+        """Returns the base filename of the active connected database or dataset."""
+        try:
+            prim = self.registry.get_primary() if hasattr(self, 'registry') else None
+            if prim and hasattr(prim, 'db_path') and prim.db_path:
+                return os.path.basename(prim.db_path)
+            if hasattr(self.warehouse_manager, 'db_path') and self.warehouse_manager.db_path:
+                return os.path.basename(self.warehouse_manager.db_path)
+        except Exception:
+            pass
+        return "smar_inventory.db"
 
     def load_new_datasource(self, file_or_db_path: str) -> BaseStorageAdapter:
         """
@@ -158,6 +345,10 @@ class SmartDataLayerEngine:
             if canon in self.domain_dict.column_to_table:
                 target_table = self.domain_dict.column_to_table[canon]
                 break
+            kg_tbl = self._resolve_target_table_from_kg(canon)
+            if kg_tbl and kg_tbl.lower() in table_lookup:
+                target_table = table_lookup[kg_tbl.lower()]
+                break
 
         # Check for direct numeric or alphanumeric ID candidates from user speech
         # Use the normalized text's candidates (post STT-normalization)
@@ -168,20 +359,129 @@ class SmartDataLayerEngine:
         # Check if the query is purely conversational, greeting, self-identity, or session recall
         lower_raw = user_text.strip().lower()
         conversational_patterns = [
-            r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|namaste)\b",
-            r"(?:what(?:'s|\s+is)\s+your\s+name|who\s+are\s+you)\b",
-            r"(?:what(?:'s|\s+is)\s+my\s+name|who\s+am\s+i)\b",
+            # Greetings & openers
+            r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night)|namaste|sup|what'?s\s+up|howdy)\b",
+            r"^(?:how\s+are\s+you|how\s+(?:are\s+you\s+doing|is\s+it\s+going|do\s+you\s+do))\b",
+            r"^(?:what\s+can\s+you\s+do|help\s+me|can\s+you\s+help|tell\s+me\s+about\s+yourself)\b",
+            # Farewells
+            r"^(?:bye|goodbye|see\s+you|take\s+care|later|cya|ttyl)\b",
+            # Identity — assistant
+            r"(?:what(?:'s|\s+is)\s+your\s+name|who\s+are\s+you|what\s+are\s+you|are\s+you\s+an?\s+ai)\b",
+            r"(?:introduce\s+yourself|tell\s+me\s+about\s+you|what\s+do\s+you\s+do)\b",
+            # Identity — user asking about themselves
+            r"(?:what(?:'s|\s+is)\s+my\s+name|who\s+am\s+i|do\s+you\s+know\s+(?:me|my\s+name))\b",
             r"(?:pronounce\s+my\s+name|say\s+my\s+name|repeat\s+my\s+name|spell\s+my\s+name)\b",
             r"(?:no\s+my\s+name\s+not\s+yours|i\s+meant\s+my\s+name|not\s+your\s+name\s+my\s+name)\b",
+            # Information about the user stored in memory
+            r"(?:do\s+you\s+(?:have|know)\s+(?:any\s+)?(?:information|info|details?|data)\s+(?:about|on|of|regarding)\s+me)\b",
+            r"(?:what\s+do\s+you\s+know\s+about\s+me|what\s+(?:have\s+you\s+)?(?:learned|remember|know|recall)\s+about\s+me)\b",
+            r"(?:tell\s+me\s+what\s+you\s+know\s+about\s+me|do\s+you\s+remember\s+me|who\s+do\s+you\s+think\s+i\s+am)\b",
+            r"(?:do\s+you\s+have\s+any\s+information\s+who\s+i\s+am|any\s+info(?:rmation)?\s+(?:about|on)\s+me)\b",
+            # Session / history recall
             r"(?:what\s+did\s+i\s+ask|what\s+was\s+(?:the\s+)?(?:1st|first|previous|last)\s+question|i\s+forgot\s+what\s+was)\b",
-            r"^(?:how\s+are\s+you|what\s+can\s+you\s+do|help\s+me)\b",
-            r"(?:do\s+you\s+have\s+any\s+information\s+about\s+me|what\s+do\s+you\s+know\s+about\s+me)\b",
-            r"\b(?:i\s+live\s+in|i\s+work\s+as|my\s+name\s+is|i\s+am\s+a|i\s+don't\s+live\s+in|update\s+(?:it\s+in\s+)?(?:your\s+)?memory|remember\s+(?:that)?|keep\s+in\s+mind|note\s+that|let\s+you\s+know)\b"
+            r"(?:what\s+(?:was\s+)?(?:my|the)\s+(?:first|1st|last|previous)\s+(?:question|message|query))\b",
+            # Personal fact storage triggers
+            r"\b(?:my\s+name\s+is|i\s+am\s+called|call\s+me|i\s+live\s+in|i\s+work\s+(?:as|at)|i\s+am\s+a(?:n)?\s+\w)\b",
+            r"\b(?:remember\s+(?:that|this)?|keep\s+in\s+mind|note\s+that|update\s+(?:your\s+)?memory|let\s+you\s+know)\b",
+            r"\b(?:i\s+don'?t\s+live\s+in|my\s+(?:city|home|country|job|role|profession)\s+is)\b",
+            # Social / friendship
+            r"(?:let'?s\s+be\s+friends|be\s+my\s+friend|friends\s+together|can\s+we\s+(?:talk|chat|be\s+friends))\b",
+            # Thanks
+            r"^(?:thank(?:s|\s+you)|thanks\s+a\s+lot|great|awesome|nice|cool|wow|ok|okay|alright|sure|fine|got\s+it)\b",
         ]
         is_pure_conversation = any(re.search(p, lower_raw) for p in conversational_patterns)
 
-        # If it's a conversational or meta query with NO warehouse table/column/code entity, bypass database search
+        # Schema Overview / Database Table Listing query check
+        _schema_overview_keywords = [
+            "what tables", "list tables", "list all tables", "show tables", "all tables",
+            "show me all tables", "tell me all tables", "tables in the database",
+            "tables in database", "tables in db", "tables are in",
+            "what is in the database", "what is in the db", "what's in the database", "what's in the db",
+            "what data is in the database", "what data do you have", "which tables",
+            "database me kya", "db me kya", "database mai kya", "db mai kya", "kya kya hai database",
+            "kya kya tables", "kitne tables", "how many tables"
+        ]
+        if any(kw in lower_raw for kw in _schema_overview_keywords) and not is_pure_conversation:
+            tables = self.warehouse_manager.list_tables()
+            if tables:
+                table_summaries = [f"{t['table_name']} ({t['row_count']:,} rows)" for t in tables]
+                tbl_names = [t['table_name'] for t in tables]
+                total_records = sum(t.get("row_count", 0) for t in tables)
+                spoken = f"The database contains {len(tables)} tables: {', '.join(tbl_names)}, with a total of {total_records:,} records."
+                context_str = f"[Database Schema Overview]: {len(tables)} tables available: {', '.join(table_summaries)}."
+                db_name = self._get_active_db_name()
+                elapsed = (time.perf_counter() - start_time) * 1000.0
+                db_ctx = {
+                    "database": db_name,
+                    "table": f"{len(tables)} Tables",
+                    "row_id": f"{total_records:,} Records",
+                    "row_identifier": f"Schema: {len(tables)} Tables, {total_records:,} Total Records",
+                    "operation": "SCHEMA_OVERVIEW",
+                    "affected_rows": total_records,
+                    "sql": "SELECT name FROM sqlite_master WHERE type='table';",
+                    "elapsed_ms": round(elapsed, 2)
+                }
+                return {
+                    "intent": "SCHEMA_OVERVIEW",
+                    "operation": "SCHEMA_OVERVIEW",
+                    "operation_details": {
+                        "operation": "SCHEMA_OVERVIEW",
+                        "tables_count": len(tables),
+                        "total_records": total_records,
+                        "tables": tables,
+                        "database": db_name,
+                        "table": f"{len(tables)} Tables",
+                        "row_identifier": f"{len(tables)} Tables, {total_records:,} Total Records",
+                        "sql": "SELECT name FROM sqlite_master WHERE type='table';",
+                        "db_context": db_ctx
+                    },
+                    "db_context": db_ctx,
+                    "table_data": {
+                        "columns": ["Table Name", "Record Count"],
+                        "rows": [[t["table_name"], t["row_count"]] for t in tables],
+                        "records": tables,
+                        "total_count": len(tables),
+                        "displayed_count": len(tables)
+                    },
+                    "visual_chart": None,
+                    "search_query": user_text,
+                    "kg_cache_hit": False,
+                    "hot_cache_hit": False,
+                    "matched_item": None,
+                    "all_results": tables,
+                    "context_string": context_str,
+                    "spoken_confirmation": spoken,
+                    "elapsed_ms": elapsed
+                }
+
+        # --- CONFIDENCE GATE ---
+        # If the user's message matches NO learned domain vocabulary (no table/column/value entity)
+        # AND there are no numeric ID candidates, treat as CONVERSATION regardless of intent label.
+        # This is the key guard that prevents social phrasing from hitting the DB.
+        has_domain_entity = bool(target_table) or bool(
+            extracted.get("matched_entities")
+        )
+        no_domain_signal = not has_domain_entity and not code_candidates
+
+        # If pure conversation OR (no domain entity AND search_query looks like general English)
         if is_pure_conversation and not target_table and not code_candidates:
+            return {
+                "intent": "CONVERSATION",
+                "search_query": "",
+                "kg_cache_hit": False,
+                "hot_cache_hit": False,
+                "matched_item": None,
+                "all_results": [],
+                "context_string": "",
+                "spoken_confirmation": "",
+                "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
+            }
+
+        # Secondary gate: if we have absolutely no domain signal and the intent is
+        # GENERAL_SEARCH (not QUANTITY/PRICE/STATUS/etc.), route to conversation.
+        # This catches novel phrasings of personal/social queries the pattern list missed.
+        _data_specific_intents = {"QUANTITY", "PRICE", "STATUS", "LOCATION", "SUMMARY", "OPERATION"}
+        if no_domain_signal and intent not in _data_specific_intents:
             return {
                 "intent": "CONVERSATION",
                 "search_query": "",
@@ -223,181 +523,240 @@ class SmartDataLayerEngine:
             any(kw in user_text.lower() for kw in dynamic_entity_keywords)
         )
         _is_op = self.operations_analyzer.is_operation_query(user_text)
+        plan = None
         if _is_op:
             plan = self.operations_analyzer.parse_plan(user_text, tables_list)
-            # Skip aggregation plans for single-entity queries — handled by entity lookup below
-            if plan and plan.get("operation") == "AGGREGATION" and _single_entity_agg_query:
-                plan = None  # Fall through to entity lookup
+        else:
+            cand_plan = self.operations_analyzer.parse_plan(user_text, tables_list)
+            if cand_plan and cand_plan.get("operation") in ("AGGREGATION", "TABULAR", "COMPOUND"):
+                _is_op = True
+                plan = cand_plan
 
-            if plan:
-                op_type = plan.get("operation")
-                op_res: Dict[str, Any] = {}
-                spoken_response = ""
-                context_str = ""
-                chart = None
+        # Skip aggregation plans for single-entity queries — handled by entity lookup below
+        if plan and plan.get("operation") == "AGGREGATION" and _single_entity_agg_query:
+            plan = None  # Fall through to entity lookup
 
-                try:
-                    if op_type == "COMPOUND":
-                        sub_results = []
-                        spoken_parts = []
-                        context_parts = []
-                        chart = None
+        if plan:
+            op_type = plan.get("operation")
+            op_res: Dict[str, Any] = {}
+            spoken_response = ""
+            context_str = ""
+            chart = None
 
-                        for sub_plan in plan["plans"]:
-                            sub_op = sub_plan.get("operation")
-                            if sub_op == "AGGREGATION":
-                                s_res = self.warehouse_manager.execute_aggregation(
-                                    table_name=sub_plan["table"],
-                                    agg_func=sub_plan["function"],
-                                    column=sub_plan["column"],
-                                    group_by=sub_plan.get("group_by"),
-                                    filter_condition=sub_plan.get("filter_condition"),
-                                    filter_params=sub_plan.get("filter_params")
-                                )
-                                sub_results.append(s_res)
-                                if (sub_plan.get("wants_visual") or sub_plan.get("group_by")) and not chart:
-                                    chart = self.visualizer.generate_chart_for_operation(s_res)
+            try:
+                if op_type == "COMPOUND":
+                    sub_results = []
+                    spoken_parts = []
+                    context_parts = []
+                    chart = None
 
-                                if sub_plan['function'] == 'COUNT' and (sub_plan['column'] in ('*', 'total') or sub_plan['column'].endswith('_id') or sub_plan['column'] == 'id'):
-                                    col_disp = sub_plan['table']
-                                else:
-                                    col_disp = sub_plan['column'].replace('_', ' ')
-                                filter_desc = sub_plan.get("filter_description")
-                                if sub_plan.get("group_by"):
-                                    grp_disp = sub_plan['group_by'].replace('_', ' ')
-                                    spoken_parts.append(f"Here is the {sub_plan['function'].lower()} of {col_disp} grouped by {grp_disp} across {sub_plan['table']}.")
-                                    context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']} of {col_disp} grouped by {grp_disp} on table '{sub_plan['table']}'. Breakdown: {s_res.get('breakdown')} (SQL: {s_res.get('sql')})")
-                                elif filter_desc:
-                                    val_disp = s_res.get("formatted_value", s_res.get("value"))
-                                    cnt_rows = s_res.get("total_rows_evaluated", 0)
-                                    spoken_parts.append(f"The {sub_plan['function'].lower()} of {col_disp} in {sub_plan['table']} for {filter_desc} is {val_disp} (evaluated across {cnt_rows} records).")
-                                    context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']}({col_disp}) on table '{sub_plan['table']}' where {filter_desc} = {val_disp} across {cnt_rows} records (SQL: {s_res.get('sql')})")
-                                else:
-                                    val_disp = s_res.get("formatted_value", s_res.get("value"))
-                                    cnt_rows = s_res.get("total_rows_evaluated", 0)
-                                    spoken_parts.append(f"The {sub_plan['function'].lower()} of {col_disp} in {sub_plan['table']} is {val_disp} across {cnt_rows} records.")
-                                    context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']}({col_disp}) on table '{sub_plan['table']}' = {val_disp} across {cnt_rows} rows (SQL: {s_res.get('sql')})")
+                    for sub_plan in plan["plans"]:
+                        sub_op = sub_plan.get("operation")
+                        if sub_op == "AGGREGATION":
+                            s_res = self.warehouse_manager.execute_aggregation(
+                                table_name=sub_plan["table"],
+                                agg_func=sub_plan["function"],
+                                column=sub_plan["column"],
+                                group_by=sub_plan.get("group_by"),
+                                filter_condition=sub_plan.get("filter_condition"),
+                                filter_params=sub_plan.get("filter_params")
+                            )
+                            sub_results.append(s_res)
+                            if (sub_plan.get("wants_visual") or sub_plan.get("group_by")) and not chart:
+                                chart = self.visualizer.generate_chart_for_operation(s_res)
 
-                        spoken_response = " ".join(spoken_parts)
-                        context_str = " | ".join(context_parts)
-                        visual_res = next((r for r, p in zip(sub_results, plan["plans"]) if p.get("wants_visual") or p.get("group_by")), sub_results[0] if sub_results else {})
-                        op_res = dict(visual_res)
-                        op_res["sub_results"] = sub_results
+                            if sub_plan['function'] == 'COUNT' and (sub_plan['column'] in ('*', 'total') or sub_plan['column'].endswith('_id') or sub_plan['column'] == 'id'):
+                                col_disp = sub_plan['table']
+                            else:
+                                col_disp = sub_plan['column'].replace('_', ' ')
+                            filter_desc = sub_plan.get("filter_description")
+                            if sub_plan.get("group_by"):
+                                grp_disp = sub_plan['group_by'].replace('_', ' ')
+                                spoken_parts.append(f"Here is the {sub_plan['function'].lower()} of {col_disp} grouped by {grp_disp} across {sub_plan['table']}.")
+                                context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']} of {col_disp} grouped by {grp_disp} on table '{sub_plan['table']}'. Breakdown: {s_res.get('breakdown')} (SQL: {s_res.get('sql')})")
+                            elif filter_desc:
+                                val_disp = s_res.get("formatted_value", s_res.get("value"))
+                                cnt_rows = s_res.get("total_rows_evaluated", 0)
+                                spoken_parts.append(f"The {sub_plan['function'].lower()} of {col_disp} in {sub_plan['table']} for {filter_desc} is {val_disp} (evaluated across {cnt_rows} records).")
+                                context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']}({col_disp}) on table '{sub_plan['table']}' where {filter_desc} = {val_disp} across {cnt_rows} records (SQL: {s_res.get('sql')})")
+                            else:
+                                val_disp = s_res.get("formatted_value", s_res.get("value"))
+                                cnt_rows = s_res.get("total_rows_evaluated", 0)
+                                spoken_parts.append(f"The {sub_plan['function'].lower()} of {col_disp} in {sub_plan['table']} is {val_disp} across {cnt_rows} records.")
+                                context_parts.append(f"[Verified Aggregation Result]: {sub_plan['function']}({col_disp}) on table '{sub_plan['table']}' = {val_disp} across {cnt_rows} rows (SQL: {s_res.get('sql')})")
 
-                    elif op_type == "AGGREGATION":
-                        op_res = self.warehouse_manager.execute_aggregation(
-                            table_name=plan["table"],
-                            agg_func=plan["function"],
-                            column=plan["column"],
-                            group_by=plan.get("group_by"),
-                            filter_condition=plan.get("filter_condition"),
-                            filter_params=plan.get("filter_params")
-                        )
-                        if plan.get("wants_visual") or plan.get("group_by"):
-                            chart = self.visualizer.generate_chart_for_operation(op_res)
+                    spoken_response = " ".join(spoken_parts)
+                    context_str = " | ".join(context_parts)
+                    visual_res = next((r for r, p in zip(sub_results, plan["plans"]) if p.get("wants_visual") or p.get("group_by")), sub_results[0] if sub_results else {})
+                    op_res = dict(visual_res)
+                    op_res["sub_results"] = sub_results
 
-                        if plan['function'] == 'COUNT' and (plan['column'] in ('*', 'total') or plan['column'].endswith('_id') or plan['column'] == 'id'):
-                            col_disp = plan['table']
+                elif op_type == "AGGREGATION":
+                    op_res = self.warehouse_manager.execute_aggregation(
+                        table_name=plan["table"],
+                        agg_func=plan["function"],
+                        column=plan["column"],
+                        group_by=plan.get("group_by"),
+                        filter_condition=plan.get("filter_condition"),
+                        filter_params=plan.get("filter_params")
+                    )
+                    if plan.get("wants_visual") or plan.get("group_by"):
+                        chart = self.visualizer.generate_chart_for_operation(op_res)
+
+                    if plan['function'] == 'COUNT' and (plan['column'] in ('*', 'total') or plan['column'].endswith('_id') or plan['column'] == 'id'):
+                        col_disp = plan['table']
+                    else:
+                        col_disp = plan['column'].replace('_', ' ')
+                    filter_desc = plan.get("filter_description")
+                    if plan.get("group_by"):
+                        grp_disp = plan['group_by'].replace('_', ' ')
+                        spoken_response = f"Here is the {plan['function'].lower()} of {col_disp} grouped by {grp_disp} across {plan['table']}."
+                        context_str = f"[Verified Aggregation Result]: {plan['function']} of {col_disp} grouped by {grp_disp} on table '{plan['table']}'. Breakdown: {op_res.get('breakdown')} (SQL: {op_res.get('sql')})"
+                    elif filter_desc:
+                        val_disp = op_res.get("formatted_value", op_res.get("value"))
+                        cnt_rows = op_res.get("total_rows_evaluated", 0)
+                        spoken_response = f"The {plan['function'].lower()} of {col_disp} in {plan['table']} for {filter_desc} is {val_disp} (evaluated across {cnt_rows} records)."
+                        context_str = f"[Verified Aggregation Result]: {plan['function']}({col_disp}) on table '{plan['table']}' where {filter_desc} = {val_disp} across {cnt_rows} records (SQL: {op_res.get('sql')})"
+                    else:
+                        val_disp = op_res.get("formatted_value", op_res.get("value"))
+                        cnt_rows = op_res.get("total_rows_evaluated", 0)
+                        if plan['function'] == 'COUNT':
+                            spoken_response = f"There are {val_disp} {col_disp} in the database."
+                            context_str = f"[Verified Aggregation Result]: There are {val_disp} {col_disp} in the database (SQL: {op_res.get('sql')})"
                         else:
-                            col_disp = plan['column'].replace('_', ' ')
-                        filter_desc = plan.get("filter_description")
-                        if plan.get("group_by"):
-                            grp_disp = plan['group_by'].replace('_', ' ')
-                            spoken_response = f"Here is the {plan['function'].lower()} of {col_disp} grouped by {grp_disp} across {plan['table']}."
-                            context_str = f"[Verified Aggregation Result]: {plan['function']} of {col_disp} grouped by {grp_disp} on table '{plan['table']}'. Breakdown: {op_res.get('breakdown')} (SQL: {op_res.get('sql')})"
-                        elif filter_desc:
-                            val_disp = op_res.get("formatted_value", op_res.get("value"))
-                            cnt_rows = op_res.get("total_rows_evaluated", 0)
-                            spoken_response = f"The {plan['function'].lower()} of {col_disp} in {plan['table']} for {filter_desc} is {val_disp} (evaluated across {cnt_rows} records)."
-                            context_str = f"[Verified Aggregation Result]: {plan['function']}({col_disp}) on table '{plan['table']}' where {filter_desc} = {val_disp} across {cnt_rows} records (SQL: {op_res.get('sql')})"
-                        else:
-                            val_disp = op_res.get("formatted_value", op_res.get("value"))
-                            cnt_rows = op_res.get("total_rows_evaluated", 0)
                             spoken_response = f"The {plan['function'].lower()} of {col_disp} in {plan['table']} is {val_disp} across {cnt_rows} records."
                             context_str = f"[Verified Aggregation Result]: {plan['function']}({col_disp}) on table '{plan['table']}' = {val_disp} across {cnt_rows} rows (SQL: {op_res.get('sql')})"
 
-                    elif op_type == "INSERT":
-                        op_res = self.warehouse_manager.insert_record(
-                            table_name=plan["table"],
-                            data=plan["data"]
-                        )
-                        new_id = op_res.get("inserted_id")
-                        spoken_response = f"Successfully added a new record into {plan['table']} with ID {new_id}."
-                        context_str = f"[Database Insert Executed]: Added new record into '{plan['table']}' with ID {new_id} (SQL: {op_res.get('sql')})"
+                elif op_type == "INSERT":
+                    op_res = self.warehouse_manager.insert_record(
+                        table_name=plan["table"],
+                        data=plan["data"]
+                    )
+                    new_id = op_res.get("inserted_id")
+                    spoken_response = f"Successfully added a new record into {plan['table']} with ID {new_id}."
+                    context_str = f"[Database Insert Executed]: Added new record into '{plan['table']}' with ID {new_id} (SQL: {op_res.get('sql')})"
 
-                    elif op_type == "UPDATE":
-                        op_res = self.warehouse_manager.update_record(
-                            table_name=plan["table"],
-                            filter_data=plan["filter"],
-                            update_data=plan["updates"]
-                        )
-                        if op_res.get("status") == "SUCCESS":
-                            diff_strs = [f"{k} changed to {v.get('after')}" for k, v in op_res.get("diff", {}).items()]
-                            filter_str = ", ".join([f"{k} {v}" for k, v in plan["filter"].items()])
-                            spoken_response = f"Successfully updated {plan['table']} ({filter_str}): {', '.join(diff_strs)}."
-                            context_str = f"[Database Update Executed]: Updated '{plan['table']}' ({filter_str}): {', '.join(diff_strs)} (SQL: {op_res.get('sql')})"
-                        else:
-                            spoken_response = f"Could not find any record in {plan['table']} matching {plan['filter']} to update."
-                            context_str = f"[Database Update Notice]: Record not found in '{plan['table']}'."
+                elif op_type == "UPDATE":
+                    op_res = self.warehouse_manager.update_record(
+                        table_name=plan["table"],
+                        filter_data=plan["filter"],
+                        update_data=plan["updates"]
+                    )
+                    if op_res.get("status") == "SUCCESS":
+                        diff_strs = [f"{k} changed to {v.get('after')}" for k, v in op_res.get("diff", {}).items()]
+                        filter_str = ", ".join([f"{k} {v}" for k, v in plan["filter"].items()])
+                        spoken_response = f"Successfully updated {plan['table']} ({filter_str}): {', '.join(diff_strs)}."
+                        context_str = f"[Database Update Executed]: Updated '{plan['table']}' ({filter_str}): {', '.join(diff_strs)} (SQL: {op_res.get('sql')})"
+                    else:
+                        spoken_response = f"Could not find any record in {plan['table']} matching {plan['filter']} to update."
+                        context_str = f"[Database Update Notice]: Record not found in '{plan['table']}'."
 
-                    elif op_type == "DELETE":
-                        op_res = self.warehouse_manager.delete_record(
-                            table_name=plan["table"],
-                            filter_data=plan["filter"]
-                        )
-                        if op_res.get("status") == "SUCCESS":
-                            filter_str = ", ".join([f"{k} {v}" for k, v in plan["filter"].items()])
-                            spoken_response = f"Successfully deleted record from {plan['table']} ({filter_str})."
-                            context_str = f"[Database Delete Executed]: Deleted from '{plan['table']}' ({filter_str}) (SQL: {op_res.get('sql')})"
-                        else:
-                            spoken_response = f"Could not find record in {plan['table']} matching {plan['filter']} to delete."
-                            context_str = f"[Database Delete Notice]: Record not found in '{plan['table']}'."
+                elif op_type == "DELETE":
+                    op_res = self.warehouse_manager.delete_record(
+                        table_name=plan["table"],
+                        filter_data=plan["filter"]
+                    )
+                    if op_res.get("status") == "SUCCESS":
+                        filter_str = ", ".join([f"{k} {v}" for k, v in plan["filter"].items()])
+                        spoken_response = f"Successfully deleted record from {plan['table']} ({filter_str})."
+                        context_str = f"[Database Delete Executed]: Deleted from '{plan['table']}' ({filter_str}) (SQL: {op_res.get('sql')})"
+                    else:
+                        spoken_response = f"Could not find record in {plan['table']} matching {plan['filter']} to delete."
+                        context_str = f"[Database Delete Notice]: Record not found in '{plan['table']}'."
 
-                    elif op_type == "TABULAR":
-                        op_res = self.warehouse_manager.query_tabular(
-                            table_name=plan["table"],
-                            limit=plan.get("limit", 10)
-                        )
-                        if plan.get("wants_visual"):
-                            chart = self.visualizer.generate_chart_for_operation(op_res)
-                        spoken_response = f"Displaying {op_res.get('displayed_count')} records from {plan['table']} in table format."
-                        context_str = f"[Verified Tabular Query]: Retrieved {op_res.get('displayed_count')} rows from '{plan['table']}' (Total: {op_res.get('total_count')}, SQL: {op_res.get('sql')})"
+                elif op_type == "TABULAR":
+                    op_res = self.warehouse_manager.query_tabular(
+                        table_name=plan["table"],
+                        limit=plan.get("limit", 10)
+                    )
+                    if plan.get("wants_visual"):
+                        chart = self.visualizer.generate_chart_for_operation(op_res)
+                    spoken_response = f"Displaying {op_res.get('displayed_count')} records from {plan['table']} in table format."
+                    context_str = f"[Verified Tabular Query]: Retrieved {op_res.get('displayed_count')} rows from '{plan['table']}' (Total: {op_res.get('total_count')}, SQL: {op_res.get('sql')})"
 
-                    # Construct table_data if tabular query or if aggregation has sample records
-                    table_data_payload = op_res if op_type == "TABULAR" else None
-                    if not table_data_payload and op_res.get("sample_records"):
-                        s_recs = op_res["sample_records"]
-                        s_cols = list(s_recs[0].keys()) if s_recs else []
-                        table_data_payload = {
-                            "operation": "TABULAR",
-                            "table": plan.get("table") or op_res.get("table", "data"),
-                            "columns": s_cols,
-                            "rows": [[r.get(c) for c in s_cols] for r in s_recs],
-                            "records": s_recs,
-                            "total_count": op_res.get("total_rows_evaluated", len(s_recs)),
-                            "displayed_count": len(s_recs),
-                            "sql": op_res.get("sql"),
-                            "elapsed_ms": op_res.get("elapsed_ms")
-                        }
-
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return {
-                        "intent": "OPERATION",
-                        "operation": op_type,
-                        "operation_details": op_res,
-                        "table_data": table_data_payload,
-                        "visual_chart": chart,
-                        "search_query": user_text,
-                        "kg_cache_hit": False,
-                        "hot_cache_hit": False,
-                        "matched_item": None,
-                        "all_results": op_res.get("records", []) if op_type == "TABULAR" else [],
-                        "context_string": context_str,
-                        "spoken_confirmation": spoken_response,
-                        "elapsed_ms": elapsed_ms
+                # Construct table_data if tabular query or if aggregation has sample records
+                table_data_payload = op_res if op_type == "TABULAR" else None
+                if not table_data_payload and op_res.get("sample_records"):
+                    s_recs = op_res["sample_records"]
+                    s_cols = list(s_recs[0].keys()) if s_recs else []
+                    table_data_payload = {
+                        "operation": "TABULAR",
+                        "table": plan.get("table") or op_res.get("table", "data"),
+                        "columns": s_cols,
+                        "rows": [[r.get(c) for c in s_cols] for r in s_recs],
+                        "records": s_recs,
+                        "total_count": op_res.get("total_rows_evaluated", len(s_recs)),
+                        "displayed_count": len(s_recs),
+                        "sql": op_res.get("sql"),
+                        "elapsed_ms": op_res.get("elapsed_ms")
                     }
-                except Exception as op_err:
-                    logger.error(f"Error executing operation plan: {op_err}")
+
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+                db_name = self._get_active_db_name()
+                target_tbl = plan.get("table") or op_res.get("table", "data")
+
+                # Determine row identifier and affected rows
+                if op_type == "AGGREGATION":
+                    cnt_rows = op_res.get("total_rows_evaluated", 0)
+                    row_id_label = f"{cnt_rows:,} Rows"
+                    row_ident = f"Evaluated {cnt_rows:,} rows in {target_tbl}"
+                    aff_rows = cnt_rows
+                elif op_type == "INSERT":
+                    ins_id = op_res.get("inserted_id", "New")
+                    row_id_label = f"#{ins_id}"
+                    row_ident = f"Inserted Row #{ins_id} into {target_tbl}"
+                    aff_rows = 1
+                elif op_type in ("UPDATE", "DELETE"):
+                    flt_vals = list(plan.get("filter", {}).values())
+                    row_id_label = f"#{flt_vals[0]}" if flt_vals else "Row"
+                    row_ident = f"{op_type.title()}d Row in {target_tbl} ({', '.join(f'{k}={v}' for k, v in plan.get('filter', {}).items())})"
+                    aff_rows = op_res.get("affected_rows", 1)
+                elif op_type == "TABULAR":
+                    disp_cnt = op_res.get("displayed_count", 0)
+                    tot_cnt = op_res.get("total_count", 0)
+                    row_id_label = f"{disp_cnt} of {tot_cnt:,} Rows"
+                    row_ident = f"Rows 1-{disp_cnt} of {tot_cnt:,} in {target_tbl}"
+                    aff_rows = disp_cnt
+                else:
+                    row_id_label = "Multi-row"
+                    row_ident = f"{target_tbl} dataset"
+                    aff_rows = 0
+
+                db_ctx = {
+                    "database": db_name,
+                    "table": target_tbl,
+                    "row_id": row_id_label,
+                    "row_identifier": row_ident,
+                    "operation": f"{op_res.get('function', op_type)} {op_type}".strip(),
+                    "affected_rows": aff_rows,
+                    "sql": op_res.get("sql"),
+                    "elapsed_ms": round(op_res.get("elapsed_ms") or elapsed_ms, 2)
+                }
+                op_res["database"] = db_name
+                op_res["table"] = target_tbl
+                op_res["row_id"] = row_id_label
+                op_res["row_identifier"] = row_ident
+                op_res["db_context"] = db_ctx
+
+                return {
+                    "intent": "OPERATION",
+                    "operation": op_type,
+                    "operation_details": op_res,
+                    "db_context": db_ctx,
+                    "table_data": table_data_payload,
+                    "visual_chart": chart,
+                    "search_query": user_text,
+                    "kg_cache_hit": False,
+                    "hot_cache_hit": False,
+                    "matched_item": None,
+                    "all_results": op_res.get("records", []) if op_type == "TABULAR" else [],
+                    "context_string": context_str,
+                    "spoken_confirmation": spoken_response,
+                    "elapsed_ms": elapsed_ms
+                }
+            except Exception as op_err:
+                logger.error(f"Error executing operation plan: {op_err}")
 
         # Check Hot Cache for entity resolution
         if not resolved_item_id and search_query:
@@ -511,9 +870,52 @@ class SmartDataLayerEngine:
         if not db_results:
             self.cache_misses += 1
 
-            # Check if this is a SUMMARY or TABULAR query
-            # SUMMARY intent fires for generic "show me all" — but if the user
-            # mentioned a specific table or tabular keyword, prefer TABULAR.
+            # Check if user is asking for the list of tables / dataset schema overview
+            _lower_raw = user_text.lower().strip()
+            _schema_overview_keywords = [
+                "what tables", "list tables", "list all tables", "show tables", "all tables",
+                "tables in the database", "tables in database", "tables in db", "tables are in",
+                "what is in the database", "what is in the db", "what's in the database", "what's in the db",
+                "what data is in the database", "what data do you have", "which tables",
+                "database me kya", "db me kya", "database mai kya", "db mai kya", "kya kya hai database",
+                "kya kya tables", "kitne tables", "how many tables"
+            ]
+            if any(kw in _lower_raw for kw in _schema_overview_keywords) or (intent == "SUMMARY" and not any(t["table_name"] in _lower_raw for t in tables_list)):
+                tables = self.warehouse_manager.list_tables()
+                if tables:
+                    table_summaries = [f"{t['table_name']} ({t['row_count']:,} rows)" for t in tables]
+                    tbl_names = [t['table_name'] for t in tables]
+                    total_records = sum(t.get("row_count", 0) for t in tables)
+                    spoken = f"The database contains {len(tables)} tables: {', '.join(tbl_names)}, with a total of {total_records:,} records."
+                    context_str = f"[Database Schema Overview]: {len(tables)} tables available: {', '.join(table_summaries)}."
+                    return {
+                        "intent": "SCHEMA_OVERVIEW",
+                        "operation": "SCHEMA_OVERVIEW",
+                        "operation_details": {
+                            "operation": "SCHEMA_OVERVIEW",
+                            "tables_count": len(tables),
+                            "total_records": total_records,
+                            "tables": tables
+                        },
+                        "table_data": {
+                            "columns": ["Table Name", "Record Count"],
+                            "rows": [[t["table_name"], t["row_count"]] for t in tables],
+                            "records": tables,
+                            "total_count": len(tables),
+                            "displayed_count": len(tables)
+                        },
+                        "visual_chart": None,
+                        "search_query": user_text,
+                        "kg_cache_hit": False,
+                        "hot_cache_hit": False,
+                        "matched_item": None,
+                        "all_results": tables,
+                        "context_string": context_str,
+                        "spoken_confirmation": spoken,
+                        "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
+                    }
+
+            # Check if this is a TABULAR query
             _tabular_keywords_present = any(
                 kw in user_text.lower()
                 for kw in ["in a table", "in table", "show all", "list all", "show me all",
@@ -521,25 +923,6 @@ class SmartDataLayerEngine:
                            "all stores", "all employees", "all products", "all orders",
                            "all customers", "all suppliers", "all categories"]
             )
-            if intent == "SUMMARY" and not _tabular_keywords_present:
-                # Aggregate across active tables
-                tables = self.warehouse_manager.list_tables()
-                if tables:
-                    primary_table = tables[0]["table_name"]
-                    agg_data = self.warehouse_manager.execute_aggregation(primary_table)
-                    total_records = self.sync_engine.total_rows_synced
-                    spoken = f"The dataset currently has {len(tables)} tables with {total_records:,} total records."
-                    res_payload = {
-                        "intent": intent,
-                        "operation": "AGGREGATE",
-                        "data": agg_data,
-                        "spoken_confirmation": spoken,
-                        "kg_cache_hit": False,
-                        "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
-                    }
-                    _summary_cache_key = f"summary:{len(tables)}:{total_records}"
-                    hot_cache.set(_summary_cache_key, res_payload, ttl_seconds=300)
-                    return res_payload
 
             # If tabular keywords detected and no ID found → force TABULAR operation
             if _tabular_keywords_present and not resolved_item_id:
@@ -588,9 +971,29 @@ class SmartDataLayerEngine:
                         logger.error(f"Forced TABULAR query error: {tab_err}")
 
             # Search warehouse via FTS or adapter
+            # RELEVANCE PRE-CHECK: Only run FTS if the search query has real domain tokens.
+            # This prevents accidental geo/common-word matches from triggering DB responses
+            # on conversational queries that slipped past the confidence gate.
+            _meaningful_search_tokens = [
+                w for w in re.findall(r"[a-zA-Z0-9]+", search_query.lower())
+                if len(w) > 2 and w not in {
+                    "the", "and", "for", "you", "are", "was", "what", "who",
+                    "how", "can", "could", "would", "tell", "show", "give",
+                    "any", "all", "from", "with", "about", "have", "this",
+                    "that", "yes", "not", "its", "your", "mine", "our",
+                    "let", "get", "set", "put", "see", "say", "use"
+                }
+            ]
+            # Only search DB if:
+            # (a) there's at least one meaningful token AND there's a domain entity match, OR
+            # (b) there's a numeric code candidate (explicit ID lookup)
+            _should_search_db = (
+                bool(code_candidates) or
+                (bool(_meaningful_search_tokens) and has_domain_entity)
+            )
 
             query_str = search_query if search_query else user_text.strip()
-            if query_str:
+            if query_str and _should_search_db:
                 # 1. Search warehouse using search_query
                 db_results = self.warehouse_manager.search_text(query_str, limit=5)
                 # 2. Also try raw user text if search_query had no hits
@@ -601,6 +1004,20 @@ class SmartDataLayerEngine:
                     adapter = self.registry.get_primary()
                     if adapter:
                         db_results = adapter.search_by_text(query_str, limit=5)
+            elif query_str and not _should_search_db:
+                # No domain signal — treat as conversational, skip DB entirely
+                logger.debug(f"Skipping DB search (no domain entity): '{user_text}'")
+                return {
+                    "intent": "CONVERSATION",
+                    "search_query": search_query,
+                    "kg_cache_hit": False,
+                    "hot_cache_hit": False,
+                    "matched_item": None,
+                    "all_results": [],
+                    "context_string": "",
+                    "spoken_confirmation": "",
+                    "elapsed_ms": (time.perf_counter() - start_time) * 1000.0
+                }
 
         # Step 4: Universal Dynamic Field Extraction & Spoken Answer Formulation
         # ZERO hardcoding: dynamically derives attributes from the actual returned record.
@@ -769,8 +1186,57 @@ class SmartDataLayerEngine:
                     structured_context_lines.append(f"[Other Matching Records Found]: Other {pk_name}s: {', '.join(other_ids)}")
 
                 top_attrs = all_attrs[:3]
-                if top_attrs:
-                    spoken_response = f"{primary_label}: {', '.join(top_attrs)}."
+                if asked_cols:
+                    # User specifically asked for this attribute (e.g. salary, price, quantity, status)
+                    first_asked = asked_cols[0]
+                    c_name, c_val = first_asked.split(":", 1)
+                    c_val_str = c_val.strip()
+                    try:
+                        if c_val_str.isdigit():
+                            c_val_str = f"{int(c_val_str):,}"
+                        elif "." in c_val_str and c_val_str.replace(".", "", 1).isdigit():
+                            c_val_str = f"{float(c_val_str):,.2f}"
+                    except Exception:
+                        pass
+                    spoken_response = f"The {c_name.strip().lower()} of {primary_label} is {c_val_str}."
+                elif intent == "PRICE":
+                    price_entry = next((a for a in all_attrs if any(k in a.lower() for k in ["price", "salary", "cost", "rate", "mrp", "amount"])), None)
+                    if price_entry:
+                        c_name, c_val = price_entry.split(":", 1)
+                        c_val_str = c_val.strip()
+                        try:
+                            if c_val_str.isdigit():
+                                c_val_str = f"{int(c_val_str):,}"
+                            elif "." in c_val_str and c_val_str.replace(".", "", 1).isdigit():
+                                c_val_str = f"{float(c_val_str):,.2f}"
+                        except Exception:
+                            pass
+                        spoken_response = f"The {c_name.strip().lower()} of {primary_label} is {c_val_str}."
+                    else:
+                        spoken_response = f"{primary_label} has details: {', '.join(top_attrs)}."
+                elif intent == "QUANTITY":
+                    qty_entry = next((a for a in all_attrs if "quantity" in a.lower()), None)
+                    if qty_entry:
+                        c_name, c_val = qty_entry.split(":", 1)
+                        spoken_response = f"The available stock for {primary_label} is {c_val.strip()}."
+                    else:
+                        spoken_response = f"{primary_label} has details: {', '.join(top_attrs)}."
+                elif intent == "STATUS":
+                    status_entry = next((a for a in all_attrs if "status" in a.lower()), None)
+                    if status_entry:
+                        c_name, c_val = status_entry.split(":", 1)
+                        spoken_response = f"The status of {primary_label} is {c_val.strip()}."
+                    else:
+                        spoken_response = f"{primary_label} has details: {', '.join(top_attrs)}."
+                elif intent == "LOCATION":
+                    loc_entry = next((a for a in all_attrs if any(k in a.lower() for k in ["location", "city", "country", "warehouse", "store", "aisle", "rack", "bin"])), None)
+                    if loc_entry:
+                        c_name, c_val = loc_entry.split(":", 1)
+                        spoken_response = f"The {c_name.strip().lower()} of {primary_label} is {c_val.strip()}."
+                    else:
+                        spoken_response = f"{primary_label} has details: {', '.join(top_attrs)}."
+                elif top_attrs:
+                    spoken_response = f"{primary_label} details: {', '.join(top_attrs)}."
                 else:
                     spoken_response = f"Found record for {primary_label}."
 
@@ -797,10 +1263,43 @@ class SmartDataLayerEngine:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
+        db_name = self._get_active_db_name()
+        target_tbl = source_table or (primary_item.get('_source_table') if primary_item else None) or target_table or "data"
+
+        op_res_details = None
+        db_ctx = None
+        if primary_item:
+            pk_col = next((k for k in primary_item.keys() if "id" in k.lower()), list(primary_item.keys())[0] if primary_item else "id")
+            row_id_val = str(primary_item.get(pk_col, "1"))
+            db_ctx = {
+                "database": db_name,
+                "table": target_tbl,
+                "row_id": f"#{row_id_val}",
+                "row_identifier": f"Row #{row_id_val} ({pk_col} = {row_id_val})",
+                "operation": "RECORD_LOOKUP",
+                "primary_key": pk_col,
+                "affected_rows": 1,
+                "sql": f'SELECT * FROM "{target_tbl}" WHERE "{pk_col}" = \'{row_id_val}\' LIMIT 1;',
+                "elapsed_ms": round(elapsed_ms, 2)
+            }
+            op_res_details = {
+                "operation": "RECORD_LOOKUP",
+                "function": "LOOKUP",
+                "table": target_tbl,
+                "database": db_name,
+                "row_id": f"#{row_id_val}",
+                "row_identifier": f"Row #{row_id_val} ({pk_col} = {row_id_val})",
+                "sample_records": [primary_item],
+                "sql": f'SELECT * FROM "{target_tbl}" WHERE "{pk_col}" = \'{row_id_val}\' LIMIT 1;',
+                "elapsed_ms": round(elapsed_ms, 2),
+                "db_context": db_ctx
+            }
+
         result_payload = {
             "intent": intent,
-            "operation": None,
-            "operation_details": None,
+            "operation": "RECORD_LOOKUP" if primary_item else None,
+            "operation_details": op_res_details,
+            "db_context": db_ctx,
             "table_data": None,
             "visual_chart": None,
             "search_query": search_query,

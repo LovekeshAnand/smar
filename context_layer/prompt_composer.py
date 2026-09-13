@@ -117,7 +117,7 @@ class PromptComposer:
             "=== VOICE INTERACTION RULES ===",
             "- Keep responses concise, spoken, and conversational (1 to 3 sentences).",
             "- Do NOT use markdown tables, asterisks, bullet points, or complex formatting since responses are spoken aloud via TTS.",
-            "- Match the language of the user: If the user speaks English, respond in clear English. If the user speaks Hindi, respond in Hindi.",
+            "- Always respond in clear, natural English by default. Even if the user asks in Hinglish (Romanized Hindi) or casual phrasing, provide the answer in clear English. Only respond in Hindi if the user explicitly asks to speak or reply in Hindi (e.g. 'reply in Hindi', 'hindi me batao').",
             "- If the user shares a new personal detail (e.g. city, job, preference), acknowledge it warmly."
         ])
 

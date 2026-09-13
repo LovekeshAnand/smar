@@ -36,6 +36,7 @@ logger = logging.getLogger("smar.server")
 from core.epsilon_bridge import EpsilonBridge
 from voice.gnani_stt import GnaniSTT
 from voice.gnani_tts import GnaniTTS
+from voice.gnani_translator import GnaniTranslator
 from memory.context_manager import ContextManager
 from context_layer import ContextLayerEngine, ContextConfig
 from structured_data.adapters import AdapterRegistry, SQLiteStorageAdapter
@@ -59,6 +60,7 @@ context_engine = ContextLayerEngine(config=context_config)
 context_mgr = ContextManager()
 stt_client = GnaniSTT()
 tts_client = GnaniTTS(voice=os.getenv("GNANI_VOICE_NAME", "Nalini"))
+translator = GnaniTranslator()
 epsilon_bridge = EpsilonBridge()
 
 # Initialize Smart Data Layer & Multi-Source Storage Adapters
@@ -247,15 +249,26 @@ async def process_chat(req: ChatRequest):
 
     user_id = req.user_id or "lovekesh"
 
+    # Detect if user is interacting in Hindi / Hinglish or requested Hindi
+    is_hindi_mode = translator.is_hindi_or_hinglish(user_text, req.language)
+
+    # If user provided Devanagari Hindi text, translate it to English for precise NLU & SQL processing
+    processed_query = await translator.translate_to_english(user_text)
+
     # 1. Query Smart Data Layer asynchronously (non-blocking over 1M+ rows & KG cache)
-    smart_res = await smart_data_engine.process_query_async(user_text, user_id=user_id)
+    smart_res = await smart_data_engine.process_query_async(processed_query, user_id=user_id)
+    if smart_res.get("intent") == "CONVERSATION" and processed_query != user_text:
+        alt_res = await smart_data_engine.process_query_async(user_text, user_id=user_id)
+        if alt_res.get("intent") != "CONVERSATION":
+            smart_res = alt_res
+
     inventory_context = smart_res.get("context_string")
 
     # 2. Ingest turn, run hybrid retrieval, compose dynamic prompt
     turn_result = context_engine.process_user_turn(
         user_id=user_id,
-        user_text=user_text,
-        language_hint=req.language or "en-IN"
+        user_text=processed_query if processed_query != user_text else user_text,
+        language_hint="en-IN" if is_hindi_mode else (req.language or "en-IN")
     )
     system_prompt = turn_result["system_prompt"]
     retrieval = turn_result["retrieval"]
@@ -296,12 +309,43 @@ async def process_chat(req: ChatRequest):
         if clean_memories:
             context_blocks.append("[Recalled Personal Notes]:\n" + "\n".join(f"- {m}" for m in clean_memories))
 
+    # Always inform LLM of connected database tables so it never claims lack of access
+    try:
+        active_tables = sorted(list(smart_data_engine.domain_dict.table_names))
+        if active_tables:
+            context_blocks.append(
+                f"[Connected Database Schema]: Connected tables in your database: {', '.join(active_tables)}. "
+                "You have full access to this database. Answer questions about it directly in clear English."
+            )
+    except Exception:
+        pass
+
     context_summary = "\n\n".join(context_blocks) if context_blocks else None
 
-    # 2. Determine reply text: for operations or verified grounded database results, use authoritative calculation directly to avoid LLM hallucination
-    if smart_res.get("intent") == "OPERATION" and smart_res.get("spoken_confirmation"):
-        reply_text = smart_res["spoken_confirmation"]
-    elif smart_res.get("spoken_confirmation") and smart_res.get("matched_item"):
+    # 2. Determine reply text
+    # Strategy:
+    # - OPERATION & SCHEMA_OVERVIEW intents → use spoken_confirmation directly (authoritative DB result)
+    # - Verified data-specific intents (QUANTITY, PRICE, STATUS, LOCATION) with a matched item → use spoken_confirmation
+    # - GENERAL_SEARCH with matched item only if a meaningful domain entity was in the search query
+    # - Everything else (CONVERSATION, ambiguous GENERAL_SEARCH, no match) → always route to LLM
+    _smart_intent = smart_res.get("intent", "CONVERSATION")
+    _data_confirmed_intents = {"QUANTITY", "PRICE", "STATUS", "LOCATION"}
+
+    _use_db_answer = False
+    if (_smart_intent in ("OPERATION", "SCHEMA_OVERVIEW") or smart_res.get("operation")) and smart_res.get("spoken_confirmation"):
+        # Always trust OPERATION and SCHEMA_OVERVIEW results (aggregations, CRUD, tabular, schema overview)
+        _use_db_answer = True
+    elif _smart_intent in _data_confirmed_intents and smart_res.get("spoken_confirmation") and smart_res.get("matched_item"):
+        # Specific data query with a real match
+        _use_db_answer = True
+    elif _smart_intent == "GENERAL_SEARCH" and smart_res.get("matched_item") and smart_res.get("spoken_confirmation"):
+        # GENERAL_SEARCH: only trust if search_query is non-trivial (≥2 words, not purely conversational)
+        _sq = smart_res.get("search_query", "")
+        _sq_words = [w for w in _sq.split() if len(w) > 2]
+        if len(_sq_words) >= 2:
+            _use_db_answer = True
+
+    if _use_db_answer:
         reply_text = smart_res["spoken_confirmation"]
     else:
         # Filter recent conversation turns to exclude any past hallucinated numbers conflicting with verified data
@@ -315,7 +359,7 @@ async def process_chat(req: ChatRequest):
 
         try:
             reply_text = await epsilon_bridge.generate_reply(
-                user_prompt=user_text,
+                user_prompt=processed_query,
                 context=context_summary,
                 system_prompt=system_prompt,
                 conversation_history=clean_recent_turns,
@@ -334,6 +378,8 @@ async def process_chat(req: ChatRequest):
         # NEVER store transactional, database lookup, or Q&A turn pairs.
         smart_intent = smart_res.get("intent", "CONVERSATION")
         is_transactional = smart_intent in ("OPERATION", "SEARCH", "PRICE", "QUANTITY", "STATUS", "LOCATION")
+        # CONVERSATION intent should never be stored as transactional — it goes to LLM for a natural reply
+        is_conversation_turn = smart_intent == "CONVERSATION"
         is_refusal = any(p in reply_text.lower() for p in [
             "i don't have access", "as an ai assistant", "temporary glitch", "no matching records found"
         ])
@@ -343,6 +389,7 @@ async def process_chat(req: ChatRequest):
         should_store = (
             not is_refusal
             and not is_transactional
+            and not is_conversation_turn   # Don't store social/identity Q&A pairs as memories
             and not has_numeric_answer
             and context_engine.pipeline.should_store_semantic(user_text)
         )
@@ -390,10 +437,22 @@ async def process_chat(req: ChatRequest):
 
     asyncio.create_task(_async_knowledge_formation())
 
-    # 5. Synthesize voice with Gnani TTS
+    # 5. Bilingual Indic Output Translation
+    # If the user conversed in Hindi/Hinglish, translate the clean English response into natural Hindi
+    spoken_text = reply_text
+    if is_hindi_mode:
+        try:
+            hindi_reply = await translator.translate_to_hindi(reply_text)
+            if hindi_reply and not hindi_reply.startswith("Error"):
+                reply_text = hindi_reply
+                spoken_text = hindi_reply
+        except Exception as e:
+            logger.debug(f"Translation to Hindi note: {e}")
+
+    # Synthesize voice with Gnani TTS (speaks Hindi naturally when given Hindi text!)
     audio_b64 = None
     try:
-        audio_bytes = await tts_client.synthesize(reply_text, voice=req.voice or tts_client.voice)
+        audio_bytes = await tts_client.synthesize(spoken_text, voice=req.voice or tts_client.voice)
         if audio_bytes:
             audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
     except Exception as e:
@@ -408,15 +467,17 @@ async def process_chat(req: ChatRequest):
         "operation_details": smart_res.get("operation_details"),
         "table_data": smart_res.get("table_data"),
         "visual_chart": smart_res.get("visual_chart"),
+        "db_context": smart_res.get("db_context") or (smart_res.get("operation_details") or {}).get("db_context"),
         "smart_data": {
             "intent": smart_res.get("intent"),
             "operation": smart_res.get("operation"),
             "operation_details": smart_res.get("operation_details"),
+            "db_context": smart_res.get("db_context") or (smart_res.get("operation_details") or {}).get("db_context"),
             "table_data": smart_res.get("table_data"),
             "visual_chart": smart_res.get("visual_chart"),
             "kg_cache_hit": smart_res.get("kg_cache_hit"),
             "matched_item": smart_res.get("matched_item"),
-            "spoken_confirmation": smart_res.get("spoken_confirmation"),
+            "spoken_confirmation": spoken_text,
             "elapsed_ms": smart_res.get("elapsed_ms")
         }
     }
@@ -484,6 +545,7 @@ async def process_voice(
         "operation_details": chat_resp.get("operation_details"),
         "table_data": chat_resp.get("table_data"),
         "visual_chart": chat_resp.get("visual_chart"),
+        "db_context": chat_resp.get("db_context"),
         "smart_data": chat_resp.get("smart_data")
     }
 

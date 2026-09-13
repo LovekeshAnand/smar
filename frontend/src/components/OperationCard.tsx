@@ -5,6 +5,11 @@ import React, { useState } from "react";
 export interface OperationDetails {
   operation: "AGGREGATION" | "INSERT" | "UPDATE" | "DELETE" | "TABULAR" | "COMPOUND" | string;
   table: string;
+  database?: string;
+  row_id?: string;
+  row_identifier?: string;
+  primary_key?: string;
+  db_context?: any;
   function?: string;
   column?: string;
   group_by?: string | null;
@@ -71,11 +76,28 @@ export const OperationCard: React.FC<OperationCardProps> = ({ details }) => {
             {details.function ? `${details.function} ${details.operation}` : details.operation}
           </span>
           <span className="text-xs font-mono text-slate-300 flex items-center gap-1.5">
+            <span className="text-slate-500 font-sans">db:</span>
+            <span className="text-emerald-300 font-semibold bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded flex items-center gap-1">
+              <svg className="w-3 h-3 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <ellipse cx="12" cy="5" rx="9" ry="3" />
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+              </svg>
+              {details.database || "smar_inventory.db"}
+            </span>
+          </span>
+          <span className="text-xs font-mono text-slate-300 flex items-center gap-1.5">
             <span className="text-slate-500 font-sans">table:</span>
             <span className="text-cyan-300 font-semibold bg-cyan-950/40 border border-cyan-800/40 px-2 py-0.5 rounded">
               {details.table}
             </span>
           </span>
+          {(details.row_identifier || details.row_id) && (
+            <span className="text-xs font-mono text-amber-300 flex items-center gap-1.5 bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded">
+              <span className="text-slate-500 font-sans">target:</span>
+              <span className="font-semibold">{details.row_identifier || `Row ${details.row_id}`}</span>
+            </span>
+          )}
           {details.filter_condition && (
             <span className="text-[10px] font-mono text-amber-300 bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded">
               WHERE {details.filter_condition}

@@ -97,9 +97,11 @@ class SmartIntentEntityExtractor:
             "tell", "me", "show", "how", "much", "many", "what", "s", "the", "a", "an",
             "of", "in", "on", "at", "by", "for", "with", "about", "against", "between", "into", "through",
             "during", "before", "after", "above", "below", "to", "from", "up", "down", "give", "find", "get", "check",
-            "bhaiya", "bhai", "ji", "kya", "hai", "ka", "ki", "ke", "ko", "se", "me", "mein",
+            "database", "db", "system", "our", "us", "present", "available", "currently", "current", "here", "there",
+            "bhaiya", "bhai", "ji", "kya", "hai", "hain", "ho", "tha", "the", "thi", "ka", "ki", "ke", "ko", "se", "me", "mein", "mai", "pe", "par",
+            "hamare", "hamara", "humare", "apne", "paas", "kuch", "sab", "sabhi", "abhi", "batao", "dikhao",
             "kitna", "kitne", "kitni", "bacha", "bache", "bachi", "pada", "rakha", "bhav", "rate",
-            "daam", "keemat", "warehouse", "store", "dukan", "hoga", "chahiye", "please", "kahan", "rakha"
+            "daam", "keemat", "warehouse", "dukan", "hoga", "chahiye", "please", "kahan"
         }
         raw_words = re.findall(r"[a-zA-Z0-9_\-]+", lower)
         meaningful_tokens = [w for w in raw_words if w not in stop_words and len(w) > 1]
