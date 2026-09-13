@@ -125,3 +125,46 @@ def test_admin_alerts_logging_and_resolution(temp_alert_manager):
     assert resolved["status"] == "RESOLVED"
     assert resolved["resolved_by"] == "lovekesh"
     assert temp_alert_manager.get_unresolved_count() == initial_unresolved
+
+
+def test_fastapi_security_chat_gate():
+    from starlette.testclient import TestClient
+    from server import app
+
+    client = TestClient(app)
+
+    # 1. Operator attempts salary query -> Should be blocked with exact compliant message
+    res = client.post("/api/chat", json={
+        "text": "What is the average salary of employees?",
+        "user_id": "rajesh"
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get("security_blocked") is True
+    assert RESTRICTED_ACCESS_MESSAGE in data.get("reply")
+
+    # 2. Check that alert was recorded in admin alerts API
+    res_alerts = client.get("/api/admin/alerts")
+    assert res_alerts.status_code == 200
+    alerts_data = res_alerts.json()
+    assert alerts_data["unresolved_count"] >= 1
+    found_alert = next((a for a in alerts_data["alerts"] if a["user_id"] == "rajesh"), None)
+    assert found_alert is not None
+
+    # 3. Test list business rules
+    res_rules = client.get("/api/rules")
+    assert res_rules.status_code == 200
+    rules_data = res_rules.json()
+    assert len(rules_data["rules"]) >= 6
+
+    # 4. Test adding a business rule via API
+    res_add = client.post("/api/rules", json={
+        "title": "Cold Storage Emergency Alert",
+        "description": "If cold storage temperature rises above -10°C, dispatch immediate technician.",
+        "category": "safety",
+        "priority": 9,
+        "keywords": ["temperature", "cold storage", "freezer"]
+    })
+    assert res_add.status_code == 200
+    assert res_add.json()["rule"]["title"] == "Cold Storage Emergency Alert"
+

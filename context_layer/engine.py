@@ -50,7 +50,8 @@ class ContextLayerEngine:
         user_id: str,
         user_text: str,
         language_hint: str = "en-IN",
-        custom_instructions: Optional[str] = None
+        custom_instructions: Optional[str] = None,
+        business_rules: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Processes an incoming user message:
@@ -93,7 +94,8 @@ class ContextLayerEngine:
         system_prompt = self.composer.compose_system_prompt(
             retrieval_result=retrieval_result,
             language_hint=language_hint,
-            custom_instructions=custom_instructions
+            custom_instructions=custom_instructions,
+            business_rules=business_rules
         )
 
         return {

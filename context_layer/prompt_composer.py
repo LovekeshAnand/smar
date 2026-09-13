@@ -24,7 +24,8 @@ class PromptComposer:
         self,
         retrieval_result: Dict[str, Any],
         language_hint: str = "en-IN",
-        custom_instructions: Optional[str] = None
+        custom_instructions: Optional[str] = None,
+        business_rules: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
         Builds a dynamic system prompt containing:
@@ -46,7 +47,7 @@ class PromptComposer:
             "",
             "=== CRITICAL IDENTITY & MEMORY DIRECTIVES ===",
             f"1. Your name is strictly {self.config.assistant_name}. You are the assistant.",
-            f"2. You are NOT {user_name}. The human speaking to you is {user_name}.",
+            f"2. You are NOT {user_name}. The human speaking to you is {user_name}. NEVER introduce yourself as {user_name}.",
             f"3. Only state 'My name is {self.config.assistant_name}' when the user EXPLICITLY asks for the ASSISTANT'S name",
             f"   (e.g. 'what is your name', 'who are you', 'what should I call you').",
             f"4. When the user says 'pronounce my name', 'say my name', 'what is my name', 'repeat my name',",
@@ -111,6 +112,19 @@ class PromptComposer:
             context_lines.append("Use these recalled memories naturally without explicitly saying 'According to my database'.")
             context_lines.append("")
             prompt_lines.extend(context_lines)
+
+        # Active Enterprise Business Rules Section
+        active_rules = business_rules or retrieval_result.get("business_rules", [])
+        if active_rules:
+            rule_lines = [
+                "=== ACTIVE ENTERPRISE BUSINESS RULES ===",
+                "[Enforce the following enterprise policies and operational rules strictly in your response]:"
+            ]
+            for r in active_rules:
+                rule_lines.append(f"- [{r.get('id', 'RULE')}] ({r.get('category', 'OPERATIONS').upper()}): {r.get('description', '')}")
+            rule_lines.append("If the user's question relates to policies, thresholds, SLA deadlines, or operational workflows, cite the exact rule above.")
+            rule_lines.append("")
+            prompt_lines.extend(rule_lines)
 
         # Voice interaction rules & formatting
         prompt_lines.extend([

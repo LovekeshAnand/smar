@@ -98,9 +98,36 @@ class UserManager:
             }
             modified = True
 
+        # Pre-seed operator for RBAC demonstration
+        if "rajesh" not in users:
+            users["rajesh"] = {
+                "username": "rajesh",
+                "name": "Rajesh Kumar",
+                "role": "operator",
+                "password_hash": hash_password("rajesh123"),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            modified = True
+
+        # Pre-seed manager for RBAC demonstration
+        if "priya" not in users:
+            users["priya"] = {
+                "username": "priya",
+                "name": "Priya Sharma",
+                "role": "manager",
+                "password_hash": hash_password("priya123"),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            modified = True
+
         if modified:
             self._save_users(users)
-            logger.info("Initialized default users: lovekesh (admin) and guest (user).")
+            logger.info("Initialized default users: lovekesh (admin), priya (manager), rajesh (operator), guest (user).")
+
+    def get_user_role(self, username: str) -> str:
+        """Fetch user role, defaulting to 'user' if not found."""
+        user = self.get_user(username)
+        return user.get("role", "user") if user else "user"
 
     def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
         """Verify username & password; returns user dict (without password_hash) if valid."""
