@@ -17,6 +17,8 @@ import { UserAuthModal, UserProfile } from "@/components/UserAuthModal";
 import { VoiceController } from "@/components/VoiceController";
 import { encodeWAV } from "@/lib/audio";
 import { GradientWaves } from "@/components/landing/GradientWaves";
+import { BusinessRulesDrawer } from "@/components/BusinessRulesDrawer";
+import { AdminAlertsModal } from "@/components/AdminAlertsModal";
 
 export default function Home() {
   // Pre-authenticated default user: lovekesh / lovekesh123
@@ -43,6 +45,9 @@ export default function Home() {
   const [vectors, setVectors] = useState<VectorMemory[]>([]);
   const [inventoryStatus, setInventoryStatus] = useState<InventoryStatus | null>(null);
   const [isMemoryOpen, setIsMemoryOpen] = useState<boolean>(false);
+  const [isRulesOpen, setIsRulesOpen] = useState<boolean>(false);
+  const [isAlertsOpen, setIsAlertsOpen] = useState<boolean>(false);
+  const [unresolvedAlertsCount, setUnresolvedAlertsCount] = useState<number>(0);
   const [isConnected, setIsConnected] = useState<boolean>(true);
   const [language, setLanguage] = useState<string>("en-IN");
 
@@ -74,6 +79,7 @@ export default function Home() {
     fetchMemoryGraph(currentUser.username);
     fetchMemoryVectors(currentUser.username);
     fetchInventoryStatus();
+    fetchAlertsCount();
 
     // Setup live WebSocket for automatic real-time memory updates
     let ws: WebSocket | null = null;
@@ -88,6 +94,9 @@ export default function Home() {
             fetchMemoryGraph(currentUser.username);
             fetchMemoryVectors(currentUser.username);
             fetchInventoryStatus();
+          }
+          if (msg.type === "ADMIN_ALERT_TRIGGERED") {
+            fetchAlertsCount();
           }
         } catch {
           // ignore non-json messages
@@ -120,6 +129,18 @@ export default function Home() {
       setIsConnected(true);
     } catch {
       setIsConnected(false);
+    }
+  };
+
+  const fetchAlertsCount = async () => {
+    try {
+      const res = await fetch("/api/admin/alerts");
+      if (res.ok) {
+        const data = await res.json();
+        setUnresolvedAlertsCount(data.unresolved_count || 0);
+      }
+    } catch {
+      // ignore network errors
     }
   };
 
@@ -497,7 +518,7 @@ export default function Home() {
       {/* Subtle Bottom Gradient Fade */}
       <div className="absolute inset-x-0 bottom-0 h-44 z-[1] bg-gradient-to-t from-[#09090b] via-[#09090b]/70 to-transparent pointer-events-none" />
 
-      {/* Header with User Badge, Language toggle, and Memory Drawer */}
+      {/* Header with User Badge, Language toggle, Memory Drawer, Rules & Alerts */}
       <Header
         onToggleMemory={() => setIsMemoryOpen((prev) => !prev)}
         isMemoryOpen={isMemoryOpen}
@@ -508,6 +529,10 @@ export default function Home() {
         onOpenUserModal={() => setIsUserModalOpen(true)}
         onToggleDataUpload={() => setIsMemoryOpen(true)}
         isDataReady={inventoryStatus?.ready_to_answer ?? true}
+        onToggleRules={() => setIsRulesOpen((prev) => !prev)}
+        isRulesOpen={isRulesOpen}
+        onToggleAlerts={() => setIsAlertsOpen((prev) => !prev)}
+        unresolvedAlertsCount={unresolvedAlertsCount}
       />
 
       {/* Main Stage with Cinematic Split Animation */}
@@ -767,6 +792,19 @@ export default function Home() {
         onRefreshInventory={fetchInventoryStatus}
         onUploadFile={handleUploadFile}
         currentUsername={currentUser.username}
+      />
+
+      {/* Slide-over Enterprise Business Rules Drawer */}
+      <BusinessRulesDrawer
+        isOpen={isRulesOpen}
+        onClose={() => setIsRulesOpen(false)}
+      />
+
+      {/* Admin Security Alerts Modal */}
+      <AdminAlertsModal
+        isOpen={isAlertsOpen}
+        onClose={() => setIsAlertsOpen(false)}
+        onAlertResolved={fetchAlertsCount}
       />
 
       {/* Hidden audio element for speech playback */}
