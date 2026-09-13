@@ -243,7 +243,8 @@ class AdaptiveDataVisualizer:
             "image_base64": b64,
             "chart_type": "bar",
             "title": title,
-            "description": f"Visual breakdown for {title} across {len(keys)} categories."
+            "theme": "enterprise-purple",
+            "description": f"Enterprise visual breakdown for {title} across {len(keys)} categories."
         }
 
     def generate_donut_chart(
@@ -285,6 +286,7 @@ class AdaptiveDataVisualizer:
             "image_base64": b64,
             "chart_type": "donut",
             "title": title,
+            "theme": "enterprise-purple",
             "description": f"Donut chart showing proportion breakdown for {title}."
         }
 
@@ -354,6 +356,7 @@ class AdaptiveDataVisualizer:
             "image_base64": b64,
             "chart_type": "kpi",
             "title": title,
+            "theme": "enterprise-purple",
             "description": f"{title}: {metric_value}. {subtitle}"
         }
 
