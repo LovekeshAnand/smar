@@ -401,19 +401,22 @@ async def process_chat(req: ChatRequest):
     _smart_intent = smart_res.get("intent", "CONVERSATION")
     _data_confirmed_intents = {"QUANTITY", "PRICE", "STATUS", "LOCATION"}
 
+    is_rule_query = bool(applicable_rules and any(k in processed_query.lower() for k in ["rule", "policy", "discount", "sla", "cutoff", "hazard", "climate", "window", "procedure", "escalation", "guideline", "how does"]))
+
     _use_db_answer = False
-    if (_smart_intent in ("OPERATION", "SCHEMA_OVERVIEW") or smart_res.get("operation")) and smart_res.get("spoken_confirmation"):
-        # Always trust OPERATION and SCHEMA_OVERVIEW results (aggregations, CRUD, tabular, schema overview)
-        _use_db_answer = True
-    elif _smart_intent in _data_confirmed_intents and smart_res.get("spoken_confirmation") and smart_res.get("matched_item"):
-        # Specific data query with a real match
-        _use_db_answer = True
-    elif _smart_intent == "GENERAL_SEARCH" and smart_res.get("matched_item") and smart_res.get("spoken_confirmation"):
-        # GENERAL_SEARCH: only trust if search_query is non-trivial (≥2 words, not purely conversational)
-        _sq = smart_res.get("search_query", "")
-        _sq_words = [w for w in _sq.split() if len(w) > 2]
-        if len(_sq_words) >= 2:
+    if not is_rule_query:
+        if (_smart_intent in ("OPERATION", "SCHEMA_OVERVIEW") or smart_res.get("operation")) and smart_res.get("spoken_confirmation"):
+            # Always trust OPERATION and SCHEMA_OVERVIEW results (aggregations, CRUD, tabular, schema overview)
             _use_db_answer = True
+        elif _smart_intent in _data_confirmed_intents and smart_res.get("spoken_confirmation") and smart_res.get("matched_item"):
+            # Specific data query with a real match
+            _use_db_answer = True
+        elif _smart_intent == "GENERAL_SEARCH" and smart_res.get("matched_item") and smart_res.get("spoken_confirmation"):
+            # GENERAL_SEARCH: only trust if search_query is non-trivial (≥2 words, not purely conversational)
+            _sq = smart_res.get("search_query", "")
+            _sq_words = [w for w in _sq.split() if len(w) > 2]
+            if len(_sq_words) >= 2:
+                _use_db_answer = True
 
     if _use_db_answer:
         reply_text = smart_res["spoken_confirmation"]
