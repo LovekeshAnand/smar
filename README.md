@@ -126,6 +126,18 @@ flowchart TB
         ConvBypass --> SessionRecall
         ConvBypass --> IdentityGuard
 
+        %% Cross-Cutting Services Layer (Layer 4)
+        subgraph CrossCutting ["Cross-Cutting Services Layer (Layer 4)"]
+            SecurityGate["Hierarchical RBAC & Clearance Gate"]
+            RulesEngine["Business Rules Engine (Dynamic Ingestion)"]
+            AdminInbox[("Admin Security Incident Inbox")]
+
+            SecurityGate -->|Access Violation Alert| AdminInbox
+            RulesEngine -->|Active Operational Policies| PromptComposer
+        end
+
+        Router -->|Pre-Flight Security Check| SecurityGate
+
         %% Prompt Composer
         PromptComposer["Dynamic System Prompt Composer"]
         OpsAnalyzer -->|Spoken Confirmation + Operation Payload| PromptComposer
@@ -247,11 +259,33 @@ The synchronized enterprise database consists of 12 tables containing **1,591,38
 
 ---
 
+### 3.8 Cross-Cutting Services & Hierarchical RBAC (Layer 4)
+- **Business Rules Engine (`cross_cutting/business_rules.py`)**:
+  - Independent enterprise policy store grounding the local LLM in operational workflows, hazardous materials storage rules, customer return windows, and volume discount tiers without polluting cognitive memory graphs.
+  - **Dynamic Ingestion**: Upload raw Markdown, Text, or JSON policy documents via `/api/rules/upload` or the Console Business Rules Drawer with instant vector-keyword indexing.
+- **Hierarchical RBAC & Clearance Matrix (`cross_cutting/security_ruleset.py`)**:
+  - Multi-tier role clearance hierarchy: `Operator (Level 1)` < `Supervisor (Level 2)` < `Manager (Level 3)` < `Director (Level 4)` < `Admin (Level 5)`.
+  - Sensitive domains (e.g. Employee Salaries, Payroll, Executive Margins, Root Credentials) strictly require Level 3+ or Level 5 clearance.
+  - **Automated Compliant Refusal**: When an operator queries restricted information, SMAR immediately enforces:
+    > *"You don't have access to this information. An alert has been sent to the admin inbox regarding the requested data. If you believe this is an error, please contact your system administrator."*
+- **Admin Security Inbox & Incident Audit (`cross_cutting/admin_alerts.py`)**:
+  - Every access violation is automatically logged with user ID, name, role, timestamp, attempted query, and required clearance.
+  - Pushes real-time `ADMIN_ALERT_TRIGGERED` alerts over WebSocket, displaying a live red pending badge on the Admin Console.
+  - **Audit Resolution API**: Allows administrators to review, add audit notes, and resolve incidents via `/api/admin/alerts/{id}/resolve`.
+
+---
+
 ## 4. Repository Structure
 
 ```
 smar/
 ├── smar_banner.png                        # Official SMAR Repository Banner
+├── cross_cutting/                         # Cross-Cutting Services Layer (Layer 4)
+│   ├── business_rules.py                  # Enterprise policy store & semantic keyword matcher
+│   ├── security_ruleset.py                # Hierarchical RBAC clearance matrix & access gate
+│   ├── admin_alerts.py                    # Security incident logger & audit inbox
+│   └── __init__.py                        # Unified layer facade
+│
 ├── smart_data/                            # Smart Data & Operations Subsystem
 │   ├── engine.py                          # Unified coordinator for queries, operations & cache
 │   ├── operations.py                      # Dynamic CRUD & Aggregation planner
@@ -286,27 +320,29 @@ smar/
 │   ├── gnani_tts.py                       # Gnani / Vachana Text-to-Speech client
 │   └── audio_io.py                        # Local microphone and speaker playback
 │
-├── auth/                                  # Multi-User Authentication
-│   └── user_manager.py                    # User registration, hashing, and session management
+├── auth.py                                # Multi-User Authentication & Role Management
 │
 ├── frontend/                              # Next.js 16 Web Interface
 │   ├── public/                            # Static assets & smar_logo_transparent.png
-│   ├── src/app/                           # App router (page.tsx, layout.tsx)
-│   ├── src/components/                    # Header, OperationCard, DataTableCard, VisualChartCard
+│   ├── src/app/                           # App router (page.tsx, layout.tsx, /console)
+│   ├── src/components/                    # BusinessRulesDrawer, AdminAlertsModal, Header, OperationCard
 │   └── next.config.ts                     # Configured for 1GB uploads and API proxying
 │
 ├── data/                                  # Persistent Databases
-│   ├── warehouse.db                       # 12-table synchronized retail warehouse (1.59M rows)
+│   ├── smar_inventory.db                  # 12-table synchronized retail warehouse (1.59M rows)
 │   ├── smar_memory.db                     # Multi-tenant Knowledge Graph & Vector memories
-│   └── users.db                           # User authentication database
+│   ├── business_rules.json                # Enterprise operational rules store
+│   ├── admin_alerts.json                  # Security audit violations inbox
+│   └── users.json                         # User credentials & RBAC roles
 │
-├── tests/                                 # Unit & Integration Test Suite (54 Tests)
+├── tests/                                 # Unit & Integration Test Suite (61 Tests)
+│   ├── test_cross_cutting.py              # Business rules, RBAC clearance & Admin Inbox tests
 │   ├── test_operations_layer.py           # CRUD, aggregations, charts, and intent parsing
-│   ├── test_context_layer.py
-│   ├── test_context_memory.py
-│   ├── test_smart_data_layer.py
-│   ├── test_tiered_cache.py
-│   └── test_epsilon_bridge.py
+│   ├── test_context_layer.py              # Multi-tenant graph & prompt composer tests
+│   ├── test_context_memory.py             # Relational memory upsert tests
+│   ├── test_smart_data_layer.py           # Universal warehouse queries
+│   ├── test_tiered_cache.py               # Redis L2 & In-Memory L1 tests
+│   └── test_epsilon_bridge.py             # Inference bridge tests
 │
 ├── scratch/                               # Battle & Extreme Test Suites
 │   ├── battle_test_suite.py               # 18/18 zero-hardcoding operations suite
