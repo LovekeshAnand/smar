@@ -82,6 +82,14 @@ class AdminAlertManager:
             f"SECURITY ALERT [{alert_id}]: User '{user_id}' (role: {role}) "
             f"attempted unauthorized access to '{resource_requested}' via query: '{query}'"
         )
+
+        # Asynchronously dispatch real-time incident alert to Telegram bot
+        try:
+            from cross_cutting.telegram_notifier import telegram_notifier
+            telegram_notifier.dispatch_alert_async(alert_record)
+        except Exception as e:
+            logger.warning(f"Could not dispatch alert to Telegram: {e}")
+
         return alert_record
 
     def list_alerts(self, status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:

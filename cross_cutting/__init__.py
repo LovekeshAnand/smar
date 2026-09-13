@@ -16,6 +16,10 @@ from cross_cutting.admin_alerts import (
     AdminAlertManager,
     admin_alert_manager
 )
+from cross_cutting.telegram_notifier import (
+    TelegramNotifier,
+    telegram_notifier
+)
 from cross_cutting.security_ruleset import (
     SecurityAccessController,
     security_access_controller,
@@ -29,6 +33,8 @@ __all__ = [
     "business_rules_engine",
     "AdminAlertManager",
     "admin_alert_manager",
+    "TelegramNotifier",
+    "telegram_notifier",
     "SecurityAccessController",
     "security_access_controller",
     "AccessDecision",

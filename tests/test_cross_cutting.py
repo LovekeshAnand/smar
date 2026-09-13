@@ -168,3 +168,44 @@ def test_fastapi_security_chat_gate():
     assert res_add.status_code == 200
     assert res_add.json()["rule"]["title"] == "Cold Storage Emergency Alert"
 
+
+def test_telegram_notifier_api_and_formatting():
+    from starlette.testclient import TestClient
+    from server import app
+    from cross_cutting.telegram_notifier import telegram_notifier
+
+    client = TestClient(app)
+
+    # Status check
+    res = client.get("/api/admin/telegram/status")
+    assert res.status_code == 200
+    data = res.json()
+    assert "enabled" in data
+    assert data["bot_username"] == "smar_alert_system_bot"
+
+    # Message formatting test
+    sample_alert = {
+        "id": "ALT-TEST01",
+        "user_id": "rajesh",
+        "user_name": "Rajesh Kumar",
+        "role": "OPERATOR",
+        "query": "Show executive salaries",
+        "resource_requested": "employee_payroll",
+        "clearance_required": "ADMIN",
+        "timestamp": "2026-09-13T16:00:00Z"
+    }
+    formatted = telegram_notifier.format_alert_message(sample_alert)
+    assert "ALT-TEST01" in formatted
+    assert "Rajesh Kumar" in formatted
+    assert "employee_payroll" in formatted
+    assert "ADMIN" in formatted
+
+    # Config update test
+    res_cfg = client.post("/api/admin/telegram/config", json={
+        "chat_id": "999888777",
+        "enabled": True
+    })
+    assert res_cfg.status_code == 200
+    assert res_cfg.json()["config"]["chat_id"] == "999888777"
+
+

@@ -46,6 +46,7 @@ from cross_cutting import (
     business_rules_engine,
     security_access_controller,
     admin_alert_manager,
+    telegram_notifier,
     RESTRICTED_ACCESS_MESSAGE
 )
 
@@ -949,6 +950,71 @@ async def resolve_security_alert(alert_id: str, req: ResolveAlertRequest):
     if not resolved:
         raise HTTPException(status_code=404, detail="Alert not found.")
     return {"status": "SUCCESS", "alert": resolved}
+
+
+class TelegramConfigRequest(BaseModel):
+    chat_id: Optional[str] = None
+    bot_token: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/admin/telegram/status")
+async def get_telegram_status():
+    """Retrieve Telegram alert configuration and pairing status."""
+    return telegram_notifier.get_status()
+
+
+@app.post("/api/admin/telegram/sync")
+async def sync_telegram_updates():
+    """Poll Telegram getUpdates to auto-pair with the latest user who messaged @smar_alert_system_bot."""
+    detected_id = telegram_notifier.sync_chat_id_from_updates()
+    status = telegram_notifier.get_status()
+    return {
+        "status": "SUCCESS" if detected_id else "NO_UPDATES",
+        "detected_chat_id": detected_id,
+        "config": status
+    }
+
+
+@app.post("/api/admin/telegram/config")
+async def update_telegram_config(req: TelegramConfigRequest):
+    """Update Telegram alert configuration (chat_id, bot_token, enabled)."""
+    res = telegram_notifier.update_config(
+        chat_id=req.chat_id,
+        bot_token=req.bot_token,
+        enabled=req.enabled
+    )
+    return {"status": "SUCCESS", "config": res}
+
+
+@app.post("/api/admin/telegram/test")
+async def send_test_telegram_alert():
+    """Send a test security alert to the configured Telegram chat."""
+    status = telegram_notifier.get_status()
+    if not status.get("chat_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="Telegram is not paired yet. Please open @smar_alert_system_bot on Telegram, send /start, and click 'Auto-Detect My Chat ID'."
+        )
+
+    test_msg = (
+        "🚀 <b>SMAR TELEMETRY TEST DISPATCH</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "✅ <b>Telegram Integration is fully operational!</b>\n"
+        "• Bot: <code>@smar_alert_system_bot</code>\n"
+        "• Gateway: <i>Enterprise Direct IP Link (Fortinet bypass active)</i>\n"
+        f"• Destination Chat ID: <code>{status['chat_id']}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "All real-time access denials and system alerts will arrive instantly in this chat."
+    )
+    ok = telegram_notifier.send_message(test_msg)
+    if not ok:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to deliver message: {telegram_notifier.config.get('last_error')}"
+        )
+    return {"status": "SUCCESS", "message": "Test alert successfully sent to Telegram."}
+
 
 
 @app.get("/api/security/roles")
